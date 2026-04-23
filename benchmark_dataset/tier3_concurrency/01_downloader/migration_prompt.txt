@@ -1,0 +1,7 @@
+You are an expert at migrating Java to idiomatic Go.
+Output exactly one file: package `downloader` with imports as needed (e.g. "errors", "sync").
+Requirements:
+- `func DownloadAll(urls []string) (map[string]string, error)` — if `urls` is nil, return a non-nil error (message may mention null); if `urls` is empty, return an empty non-nil map and nil error.
+- For each URL, the result value must be exactly `mockFetch(url)` where `mockFetch` is an unexported helper: `func mockFetch(url string) string { return "ok:" + url }` (same string rule as the Java `mockFetch`).
+- Use goroutines plus `sync.WaitGroup` (and a mutex if sharing the map) to mirror the Java thread pool + latch pattern. No real HTTP; only the mock string.
+Respond with ONLY a ```go``` fenced code block, no other text.

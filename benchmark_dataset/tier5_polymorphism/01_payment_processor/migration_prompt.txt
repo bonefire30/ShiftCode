@@ -1,0 +1,9 @@
+You are an expert at migrating Java to idiomatic Go.
+Output exactly one file: package `payment` with all necessary imports.
+Requirements:
+- `type Payment interface { LogTransaction(); Process() string }` (or equivalent).
+- `func NewCreditCardPayment(id int) *CreditCardPayment` and `func NewPaypalPayment(id int) *PaypalPayment` with `ID` field and getters if needed: `func (c *CreditCardPayment) ID() int` OR embed ID access via field `Id int` (exported) so tests can read `c.Id` — prefer **exported** `Id int` on each struct.
+- `Process()` for credit returns `"credit"`, for paypal returns `"paypal"`, and each must call `LogTransaction()` before return (no-op is fine).
+- `func RunPayment(p Payment) string` — calls `p.Process()`.
+Do not add `func main()`. Pass `go test` with `expected_test.go`.
+Respond with ONLY a ```go``` fenced code block, no other text.

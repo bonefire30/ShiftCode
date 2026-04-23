@@ -1,0 +1,16 @@
+You are an expert at migrating Java to idiomatic Go.
+Output exactly one file: package `retryexec` with imports `errors` as needed.
+Requirements:
+- Sentinel errors: `var ErrNetwork = errors.New("network")` and `var ErrAuth = errors.New("auth")` (exact message strings "network" and "auth" so tests can match).
+- `type RetryExecutor struct` with `cleanupCount int` (unexported) and `func (e *RetryExecutor) CleanupCount() int` accessor.
+- `func (e *RetryExecutor) RunWithRetry(op func() error, maxAttempts int) (attempts int, err error)`:
+  - Each call to `op` is wrapped in behavior equivalent to Java `try/finally`: **increment `cleanupCount` exactly once per attempt** (use `defer` in the per-attempt scope).
+  - `attempt` starts at 0; increment at the start of each attempt, then run `op`.
+  - If `op` returns nil, return (attempt, nil).
+  - If `errors.Is(err, ErrAuth)`, return (attempt, err) with no more retries.
+  - If `errors.Is(err, ErrNetwork)` and `attempt < maxAttempts`, retry.
+  - If `errors.Is(err, ErrNetwork)` and `attempt >= maxAttempts`, return (attempt, err).
+  - Any other non-nil error from `op` should be returned without retry: `(attempt, err)`.
+  - `maxAttempts` is the **maximum** number of attempts total (match Java: break when attempt >= max on network).
+Do not add `func main()`. Pass `go test`.
+Respond with ONLY a ```go``` fenced code block, no other text.

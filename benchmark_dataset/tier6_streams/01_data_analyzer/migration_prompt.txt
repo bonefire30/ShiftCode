@@ -1,0 +1,7 @@
+You are an expert at migrating Java to idiomatic Go.
+Output exactly one file: package `dataanalyzer` with all necessary imports.
+Requirements:
+- `type Person struct { Name, Department string; Age int }` (exported fields).
+- `func GroupAdultNamesByDepartment(people []Person) map[string][]string` — include only persons with `Age > 18`; group by `Department`, values are lists of `Name`. If two adults share a department, both names appear (order of names within a department is not specified; tests sort for comparison). If `people` is nil, return an empty non-nil map.
+Do not add `func main()`. Pass `go test`.
+Respond with ONLY a ```go``` fenced code block, no other text.

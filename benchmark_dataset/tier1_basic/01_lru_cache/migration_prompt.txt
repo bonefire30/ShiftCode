@@ -1,0 +1,8 @@
+You are an expert at migrating Java to idiomatic Go.
+Output exactly one file: package `lrucache` with all necessary imports (e.g. "container/list").
+Requirements:
+- `func NewLRUCache(capacity int) *LRUCache` — panic if capacity < 1 (to match test expectation).
+- `func (c *LRUCache) Get(key int) int` — return the value, or -1 if the key is missing; a successful get counts as "use" (LRU order).
+- `func (c *LRUCache) Put(key, value int)` — insert or update; when at capacity, evict the least-recently-used key before adding a new one. Updating an existing key refreshes recency.
+Implement true LRU (evict oldest by last use / access time).
+Respond with ONLY a ```go``` fenced code block, no other text.

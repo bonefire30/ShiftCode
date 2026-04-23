@@ -1,0 +1,13 @@
+# Conda 环境：在项目根目录执行
+#   conda env create -f environment.yml
+# 或已存在时更新依赖：
+#   conda env update -f environment.yml --prune
+name: shiftcode
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      - -r requirements.txt

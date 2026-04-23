@@ -1,0 +1,9 @@
+You are an expert at migrating Java to idiomatic Go.
+Output exactly one file: package `resultwrap` with all necessary imports.
+Requirements:
+- Generic `Result[T, E any]` (or `type Result[T, E any] struct`) with unexported fields and:
+  - `func NewSuccess[T, E any](v T) Result[T, E]` and `func NewFailure[T, E any](e E) Result[T, E]`
+  - `func (r Result[T, E]) IsSuccess() bool`, `Value() T`, `Err() E` — for a success, Err() returns the zero value of E; for failure, Value() returns the zero value of T.
+- `func FilterNonNull[T any](items []*T) []*T` — drop nil pointers; if `items` is nil, return a non-nil empty slice (or nil, but tests expect length 0 non-nil is OK).
+Do not add `func main()`. Library must pass `go test` with `expected_test.go`.
+Respond with ONLY a ```go``` fenced code block, no other text.

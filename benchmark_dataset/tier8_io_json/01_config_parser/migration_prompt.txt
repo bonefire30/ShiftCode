@@ -1,0 +1,7 @@
+You are an expert at migrating Java to idiomatic Go.
+Output exactly one file: package `configparser` with imports `encoding/json` and `io`.
+Requirements:
+- `type AppConfig struct` with `DBUrl string` field tagged ``json:"db_url"`` and a field for internal use tagged ``json:"-"`` (e.g. `Internal string` with `json:"-"`) so that **internal is never populated from JSON** (tests rely on this).
+- `func ParseConfig(r io.Reader) (*AppConfig, error)` using `json.NewDecoder` or `io.ReadAll` + `json.Unmarshal`. Return a clear error on invalid JSON.
+Do not add `func main()`. Pass `go test`.
+Respond with ONLY a ```go``` fenced code block, no other text.

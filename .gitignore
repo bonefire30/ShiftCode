@@ -1,0 +1,9 @@
+.env
+__pycache__/
+*.pyc
+report.md
+.cursor/
+run_logs/
+run_workspaces/
+project_migrations/
+frontend/node_modules/

@@ -1,0 +1,17 @@
+# Code Migration Agent MVP
+python-dotenv>=1.0.0
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+langgraph>=0.2.0
+langchain-core>=0.3.0
+langchain-openai>=0.2.0
+# Optional: MCP stdio client for mcp_query tool
+mcp>=1.0.0
+# Multi-file architect (optional; java_ast falls back to regex)
+tree-sitter>=0.21.0
+tree-sitter-java>=0.7.0
+# Optional: codebase RAG in CodebaseRAG (stub if missing)
+chromadb>=0.5.0
+
+# Optional: pin versions for reproducibility
+# pip install -r requirements.txt
