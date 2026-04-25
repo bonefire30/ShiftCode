@@ -1,0 +1,12 @@
+You are an expert at migrating a small multi-file Java project to idiomatic Go.
+Translate the full project, preserving package boundaries with sensible Go package structure.
+Do not add func main() unless the source requires an executable.
+
+Required project contracts:
+- `config.ConfigSource` must provide raw configuration text.
+- `config.ConfigParser` must parse `key=value` lines, trimming whitespace and skipping empty lines.
+- `util.ValidationUtil` must reject configs missing `host` or `port`.
+- `app.ConfigLoader` must compose source, parser, and validation into one flow.
+- Parsed config values must remain readable by key.
+
+The migrated Go project must pass `go build ./...` and `go test ./...`.

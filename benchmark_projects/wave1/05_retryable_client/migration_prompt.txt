@@ -1,0 +1,12 @@
+You are an expert at migrating a small multi-file Java project to idiomatic Go.
+Translate the full project, preserving package boundaries with sensible Go package structure.
+Do not add func main() unless the source requires an executable.
+
+Required project contracts:
+- `client.HttpClient` must stay as an interface.
+- `client.RetryPolicy` must define whether a status code is retryable.
+- `service.RemoteUserService` must retry only retryable responses and stop on success.
+- `service.ErrorMapper` must map retry exhaustion and remote failures into `client.ApiException` instances.
+- Successful responses must be converted into `service.RemoteUser` domain data.
+
+The migrated Go project must pass `go build ./...` and `go test ./...`.

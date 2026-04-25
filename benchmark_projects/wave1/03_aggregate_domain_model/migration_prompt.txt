@@ -1,0 +1,11 @@
+You are an expert at migrating a small multi-file Java project to idiomatic Go.
+Translate the full project, preserving package boundaries with sensible Go package structure.
+Do not add func main() unless the source requires an executable.
+
+Required project contracts:
+- `order.Order`, `order.OrderItem`, `order.Money`, and `order.OrderStatus` must remain separate domain concepts.
+- `order.OrderCalculator` must compute totals from the full item collection.
+- `order.OrderService` must transition an order from `DRAFT` to `SUBMITTED` only after computing total price.
+- Total calculation must preserve quantity multiplication semantics.
+
+The migrated Go project must pass `go build ./...` and `go test ./...`.

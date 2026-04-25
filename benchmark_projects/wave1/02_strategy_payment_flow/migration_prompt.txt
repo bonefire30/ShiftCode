@@ -1,0 +1,12 @@
+You are an expert at migrating a small multi-file Java project to idiomatic Go.
+Translate the full project, preserving package boundaries with sensible Go package structure.
+Do not add func main() unless the source requires an executable.
+
+Required project contracts:
+- `payment.PaymentMethod` must remain the central behavior contract.
+- `payment.CreditCardPayment` and `payment.PaypalPayment` must implement the shared payment contract and keep their method-specific return values.
+- `payment.PaymentFactory` must choose the correct concrete strategy for `credit` and `paypal`, and reject unsupported methods.
+- `payment.PaymentService` must use the factory and logger, and must dispatch through the interface rather than by duplicating method-specific logic.
+- `payment.PaymentLogger` must record human-readable entries for processed payments.
+
+The migrated Go project must pass `go build ./...` and `go test ./...`.

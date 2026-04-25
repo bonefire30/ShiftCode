@@ -105,10 +105,15 @@ def _serialize_project_state(state: dict[str, Any]) -> dict[str, Any]:
 
 def _discover_cases() -> list[dict[str, str]]:
     cases: list[dict[str, str]] = []
-    for source_java in sorted(ROOT.glob("benchmark_dataset/**/source.java")):
-        rel = source_java.parent.relative_to(ROOT)
+    seen: set[str] = set()
+    for prompt_file in sorted(ROOT.glob("benchmark_*/**/migration_prompt.txt")):
+        case_dir = prompt_file.parent
+        rel = case_dir.relative_to(ROOT)
         path_str = str(rel).replace("\\", "/")
-        cases.append({"id": path_str, "name": source_java.parent.name, "path": path_str})
+        if path_str in seen:
+            continue
+        seen.add(path_str)
+        cases.append({"id": path_str, "name": case_dir.name, "path": path_str})
     return cases
 
 

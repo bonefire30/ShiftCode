@@ -3,7 +3,11 @@ __pycache__/
 *.pyc
 report.md
 .cursor/
+.vscode/
 run_logs/
 run_workspaces/
 project_migrations/
 frontend/node_modules/
+HANDOFF_*.md
+notes/
+scratch/
