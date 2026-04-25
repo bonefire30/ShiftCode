@@ -88,6 +88,28 @@ def _is_contract_covered(check_item: str, tests_text_lc: str) -> bool:
     return all(w in tests_text_lc for w in words)
 
 
+def _nil_assertion_hits(generated_tests: dict[str, str]) -> list[str]:
+    hits: list[str] = []
+    nil_input_re = re.compile(r"\b\w+\s*\([^\n)]*\bnil\b")
+    nil_panic_re = re.compile(r"\b(panic|recover)\b.*\bnil\b|\bnil\b.*\b(panic|recover)\b")
+    nil_behavior_re = re.compile(r"\bnil\b.*\b(ignore|ignored|skip|skipped|accept|accepted|reject|rejected)")
+    allowed_err_re = re.compile(r"\berr\s*(?:!|=)=\s*nil\b|\bnil\s*(?:!|=)=\s*err\b")
+
+    for path, text in generated_tests.items():
+        for lineno, line in enumerate((text or "").splitlines(), 1):
+            low = line.lower()
+            if "nil" not in low:
+                continue
+            if allowed_err_re.search(low):
+                continue
+            if nil_input_re.search(low) or nil_panic_re.search(low) or nil_behavior_re.search(low):
+                snippet = line.strip()
+                if len(snippet) > 140:
+                    snippet = snippet[:137] + "..."
+                hits.append(f"{path}:{lineno}: {snippet}")
+    return hits
+
+
 def evaluate_test_quality(
     *,
     module_name: str,
@@ -124,10 +146,13 @@ def evaluate_test_quality(
         if not allows_panic:
             suspicious_hits.append("panic/recover assertions without prompt or source basis")
 
-    if _has_any_token(tests_lc, ["(nil)", " nil", "== nil", "!= nil"]):
+    nil_hits = _nil_assertion_hits(generated_tests)
+    if nil_hits:
         allows_nil = _has_any_token(combined_lc, ["nil", " null", "null ", "nullable", "non-nil"])
         if not allows_nil:
-            suspicious_hits.append("nil assertions without prompt or source basis")
+            suspicious_hits.append(
+                "nil assertions without prompt or source basis: " + "; ".join(nil_hits[:5])
+            )
 
     if suspicious_hits:
         failures.append(

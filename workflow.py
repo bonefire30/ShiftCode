@@ -31,7 +31,7 @@ from agent_tools import (
 from learnings import search_learnings
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
-from openai import OpenAI
+from openai import BadRequestError, OpenAI
 
 try:
     from langchain_openai import ChatOpenAI
@@ -40,6 +40,8 @@ except ImportError:  # pragma: no cover
 
 
 DEFAULT_AGENT_STEPS = 35
+DEFAULT_TRANSLATE_STEPS = 18
+DEFAULT_TEST_GEN_STEPS = 16
 
 
 def _is_deepseek_provider() -> bool:
@@ -156,13 +158,51 @@ def _assistant_message_from_openai(choice_message: Any) -> dict[str, Any]:
         "role": "assistant",
         "content": getattr(choice_message, "content", "") or "",
     }
-    reasoning = getattr(choice_message, "reasoning_content", None)
+    reasoning = _extract_reasoning_content(choice_message)
     if reasoning:
         msg["reasoning_content"] = reasoning
     tool_calls = list(getattr(choice_message, "tool_calls", None) or [])
     if tool_calls:
         msg["tool_calls"] = [_serialize_openai_tool_call(tc) for tc in tool_calls]
     return msg
+
+
+def _extract_reasoning_content(choice_message: Any) -> str:
+    reasoning = getattr(choice_message, "reasoning_content", None)
+    if reasoning:
+        return str(reasoning)
+    extra = getattr(choice_message, "model_extra", None)
+    if isinstance(extra, dict) and extra.get("reasoning_content"):
+        return str(extra["reasoning_content"])
+    dump_fn = getattr(choice_message, "model_dump", None)
+    if callable(dump_fn):
+        try:
+            dumped = dump_fn()
+        except Exception:  # noqa: BLE001
+            dumped = {}
+        if isinstance(dumped, dict) and dumped.get("reasoning_content"):
+            return str(dumped["reasoning_content"])
+    return ""
+
+
+def _strip_reasoning_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    stripped: list[dict[str, Any]] = []
+    for message in messages:
+        item = dict(message)
+        item.pop("reasoning_content", None)
+        stripped.append(item)
+    return stripped
+
+
+def _is_progress_tool(name: str) -> bool:
+    return name in {
+        "write_file",
+        "edit_file",
+        "write_test_file",
+        "edit_test_file",
+        "run_go_build",
+        "run_go_tests_only",
+    }
 
 
 def _run_deepseek_tool_loop(
@@ -173,6 +213,8 @@ def _run_deepseek_tool_loop(
     success_predicate: Any,
     followup_user_prompt: str,
     max_steps: int,
+    max_no_progress_steps: int = 5,
+    enable_thinking: bool | None = None,
     config: RunnableConfig | None = None,
 ) -> tuple[int, bool]:
     del config
@@ -185,28 +227,55 @@ def _run_deepseek_tool_loop(
     by_name: dict[str, Any] = {t.name: t for t in tools}  # type: ignore[attr-defined]
     total = 0
     success = False
+    no_progress_steps = 0
+    thinking_enabled = (
+        str(os.environ.get("DEEPSEEK_THINKING", "0")).strip().lower() not in {"0", "false", "no", "off"}
+        if enable_thinking is None
+        else bool(enable_thinking)
+    )
     for step_idx in range(1, max_steps + 1):
-        resp = client.chat.completions.create(
-            model=os.environ.get("OPENAI_MODEL", "deepseek-v4-flash"),
-            messages=messages,
-            tools=tool_specs,
-            parallel_tool_calls=True,
-            stream=False,
-            reasoning_effort="high",
-            extra_body={"thinking": {"type": "enabled"}},
-        )
+        request: dict[str, Any] = {
+            "model": os.environ.get("OPENAI_MODEL", "deepseek-v4-flash"),
+            "messages": messages,
+            "tools": tool_specs,
+            "parallel_tool_calls": True,
+            "stream": False,
+        }
+        if thinking_enabled:
+            request["reasoning_effort"] = "high"
+            request["extra_body"] = {"thinking": {"type": "enabled"}}
+        else:
+            request["extra_body"] = {"thinking": {"type": "disabled"}}
+        try:
+            resp = client.chat.completions.create(**request)
+        except BadRequestError as exc:
+            if "reasoning_content" in str(exc):
+                thinking_enabled = False
+                fallback_request = dict(request)
+                fallback_request.pop("reasoning_effort", None)
+                fallback_request["extra_body"] = {"thinking": {"type": "disabled"}}
+                fallback_request["messages"] = _strip_reasoning_messages(messages)
+                try:
+                    resp = client.chat.completions.create(**fallback_request)
+                except BadRequestError:
+                    break
+            else:
+                raise
         total = _add_tokens_from_openai_response(resp, total)
         choice = resp.choices[0]
         msg = choice.message
         assistant_msg = _assistant_message_from_openai(msg)
         tool_calls = list(getattr(msg, "tool_calls", None) or [])
         messages.append(assistant_msg)
-        reasoning_present = bool(assistant_msg.get("reasoning_content"))
         if not tool_calls:
             if success:
                 break
+            no_progress_steps += 1
+            if no_progress_steps >= max_no_progress_steps:
+                break
             messages.append({"role": "user", "content": followup_user_prompt})
             continue
+        made_progress = False
         for tc in tool_calls:
             function = getattr(tc, "function", None)
             name = str(getattr(function, "name", "") or "")
@@ -224,6 +293,8 @@ def _run_deepseek_tool_loop(
                 out = f"Error running tool {name!r}: {exc}"
             if success_predicate(name, out):
                 success = True
+            if _is_progress_tool(name):
+                made_progress = True
             messages.append(
                 {
                     "role": "tool",
@@ -231,7 +302,10 @@ def _run_deepseek_tool_loop(
                     "content": out,
                 }
             )
+        no_progress_steps = 0 if made_progress else no_progress_steps + 1
         if success:
+            break
+        if no_progress_steps >= max_no_progress_steps:
             break
     return total, success
 
@@ -410,7 +484,8 @@ def run_file_agent(
         "`OK: go build ./... succeeded.`"
     )
     messages: list[Any] = [SystemMessage(content=system), HumanMessage(content=user_block)]
-    steps = int(os.environ.get("MIGRATION_AGENT_STEPS", str(max_steps)))
+    default_steps = min(int(max_steps), DEFAULT_TRANSLATE_STEPS)
+    steps = int(os.environ.get("MIGRATION_AGENT_STEPS", str(default_steps)))
     if steps < 1:
         steps = DEFAULT_AGENT_STEPS
     if _is_deepseek_provider():
@@ -424,6 +499,7 @@ def run_file_agent(
                 f"Call run_go_build, or use write_file / edit_file to update `{out_rel}`."
             ),
             max_steps=steps,
+            max_no_progress_steps=5,
             config=config,
         )
     else:
@@ -538,7 +614,8 @@ def run_module_agent(
         "`OK: go build ./... succeeded.`"
     )
     messages: list[Any] = [SystemMessage(content=system), HumanMessage(content=user_block)]
-    steps = int(os.environ.get("MIGRATION_AGENT_STEPS", str(max_steps)))
+    default_steps = min(int(max_steps), DEFAULT_TRANSLATE_STEPS)
+    steps = int(os.environ.get("MIGRATION_AGENT_STEPS", str(default_steps)))
     if steps < 1:
         steps = DEFAULT_AGENT_STEPS
     if _is_deepseek_provider():
@@ -550,6 +627,7 @@ def run_module_agent(
             and "OK: go build ./... succeeded" in out,
             followup_user_prompt="Call run_go_build, or use write_file / edit_file to update targets.",
             max_steps=steps,
+            max_no_progress_steps=6,
             config=config,
         )
     else:
@@ -601,6 +679,11 @@ def run_module_agent(
     )
     diff_go_files = _diff_snapshot_files(before_snap, after_snap)
     effective_go_files = _merge_effective_files(declared_go_files, diff_go_files)
+    existing_expected_go_files = sorted(
+        {gr for gr in expected_go_files if (go_out / gr).is_file()}
+    )
+    effective_go_files = _merge_effective_files(effective_go_files, existing_expected_go_files)
+    missing_go_files = [gr for gr in expected_go_files if gr not in set(effective_go_files) and not (go_out / gr).is_file()]
 
     out_by_rel: dict[str, str] = {}
     for jr, gr, _ in module_targets:
@@ -615,7 +698,8 @@ def run_module_agent(
         "diff_count": len(diff_go_files),
         "effective_count": len(effective_go_files),
     }
-    return out_by_rel, total, build_ok, artifacts
+    module_ok = build_ok and not missing_go_files
+    return out_by_rel, total, module_ok, artifacts
 
 
 def run_test_gen_module_agent(
@@ -716,7 +800,8 @@ def run_test_gen_module_agent(
         "`OK: all tests passed.`"
     )
     messages: list[Any] = [SystemMessage(content=system), HumanMessage(content=user_block)]
-    steps = int(os.environ.get("MIGRATION_AGENT_STEPS", str(max_steps)))
+    default_steps = min(int(max_steps), DEFAULT_TEST_GEN_STEPS)
+    steps = int(os.environ.get("MIGRATION_AGENT_STEPS", str(default_steps)))
     if steps < 1:
         steps = DEFAULT_AGENT_STEPS
     if _is_deepseek_provider():
@@ -732,6 +817,8 @@ def run_test_gen_module_agent(
                 "and then use run_go_tests_only until OK."
             ),
             max_steps=steps,
+            max_no_progress_steps=4,
+            enable_thinking=False,
             config=config,
         )
     else:
@@ -784,14 +871,13 @@ def run_test_gen_module_agent(
     )
     diff_test_files = _diff_snapshot_files(before_snap, after_snap)
     effective_test_files = _merge_effective_files(declared_test_files, diff_test_files)
-    if not effective_test_files:
-        effective_test_files = sorted(
-            {
-                rel
-                for rel in expected_test_targets
-                if (go_out / rel).is_file()
-            }
-        )
+    existing_expected_test_files = sorted(
+        {rel for rel in expected_test_targets if (go_out / rel).is_file()}
+    )
+    effective_test_files = _merge_effective_files(
+        effective_test_files,
+        existing_expected_test_files,
+    )
 
     out_tests: dict[str, str] = {}
     for tr in effective_test_files:

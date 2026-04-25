@@ -68,7 +68,44 @@ func TestProcessReturn(t *testing.T) {
         self.assertFalse(ok)
         self.assertTrue(any(f.startswith("missing_required_assertions:") for f in failures))
 
+    def test_allows_standard_error_nil_checks(self) -> None:
+        failures, _warnings, ok = evaluate_test_quality(
+            module_name="mod2",
+            prompt_text='Load() returns "ok".',
+            prompt_contract_checklist=[],
+            java_sources={"source.java": "class X { String load(){ return \"ok\"; } }"},
+            go_sources={"source.go": "func Load() (string, error) { return \"ok\", nil }"},
+            generated_tests={
+                "source_test.go": """
+func TestLoad(t *testing.T) {
+    got, err := Load()
+    if err != nil { t.Fatal(err) }
+    if got != "ok" { t.Fatal(got) }
+}
+"""
+            },
+        )
+        self.assertTrue(ok)
+        self.assertEqual([], failures)
+
+    def test_reports_unsupported_nil_input_line(self) -> None:
+        failures, _warnings, ok = evaluate_test_quality(
+            module_name="mod3",
+            prompt_text='Load() returns "ok".',
+            prompt_contract_checklist=[],
+            java_sources={"source.java": "class X { String load(){ return \"ok\"; } }"},
+            go_sources={"source.go": "func Load(v any) string { return \"ok\" }"},
+            generated_tests={
+                "source_test.go": """
+func TestLoadNil(t *testing.T) {
+    _ = Load(nil)
+}
+"""
+            },
+        )
+        self.assertFalse(ok)
+        self.assertTrue(any("source_test.go:3" in f for f in failures))
+
 
 if __name__ == "__main__":
     unittest.main()
-

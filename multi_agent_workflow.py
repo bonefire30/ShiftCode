@@ -777,6 +777,7 @@ def _run_test_gen_stage(
     *,
     err_hint: str,
     node_name: str,
+    repair_only_failed: bool = False,
 ) -> dict[str, Any]:
     log = node_logger(node_name)
     if state.get("fatal"):
@@ -801,6 +802,20 @@ def _run_test_gen_stage(
     module_test_gen_artifacts: dict[str, dict[str, Any]] = dict(
         state.get("module_test_gen_artifacts") or {}
     )
+    previous_tgen: dict[str, str] = dict(state.get("test_gen_states") or {})
+    previous_failures = list(state.get("test_gen_failures") or [])
+    modules_to_run: list[tuple[int, list[str]]] = list(enumerate(modules))
+    if repair_only_failed and previous_failures:
+        failed_module_ids: set[int] = set()
+        for failure in previous_failures:
+            for match in re.finditer(r"\bmod(\d+)\b", str(failure)):
+                failed_module_ids.add(int(match.group(1)))
+        if failed_module_ids:
+            modules_to_run = [
+                (midx, mod)
+                for midx, mod in enumerate(modules)
+                if midx in failed_module_ids
+            ]
     expected_count = 0
     generated_count = 0
     failures: list[str] = []
@@ -822,7 +837,7 @@ def _run_test_gen_stage(
                 err_hint,
                 module_translate_artifacts.get(f"mod{midx}") or {},
             ): midx
-            for midx, mod in enumerate(modules)
+            for midx, mod in modules_to_run
         }
         for fut in as_completed(futs):
             midx = futs[fut]
@@ -847,6 +862,31 @@ def _run_test_gen_stage(
             if not ok:
                 failures.extend(module_failures)
             warnings.extend(module_warnings)
+    if repair_only_failed:
+        ran_module_labels = {f"mod{midx}" for midx, _mod in modules_to_run}
+        for midx, _mod in enumerate(modules):
+            label = f"mod{midx}"
+            if label in ran_module_labels:
+                continue
+            prev_artifacts = module_test_gen_artifacts.get(label) or {}
+            prev_effective = [
+                str(p)
+                for p in (prev_artifacts.get("effective_output_files") or [])
+                if str(p).endswith("_test.go")
+            ]
+            prev_expected = [
+                str(p)
+                for p in (prev_artifacts.get("expected_output_files") or [])
+                if str(p).endswith("_test.go")
+            ]
+            if not prev_expected:
+                prev_expected = prev_effective
+            expected_count += len(prev_expected)
+            generated_count += len(prev_effective)
+            effective_count += len(prev_effective)
+            for test_path in prev_effective:
+                if test_path in previous_tgen:
+                    tgen[test_path] = previous_tgen[test_path]
     log.info(
         "%s completed total_tokens~=%d expected_tests=%d generated_tests=%d declared_count=%d diff_count=%d effective_count=%d failed_modules=%d",
         node_name,
@@ -879,11 +919,22 @@ def test_gen_repair_node(state: MultiProjectState) -> dict[str, Any]:
     if not go_out.is_dir():
         return {}
     blog = (state.get("last_build_log") or "")[:8000]
+    failures = "\n".join(str(f) for f in (state.get("test_gen_failures") or []))
     err_hint = (
         "The Go implementation compiles. Fix only tests and test assumptions (imports, package, "
-        "API names, contract assertions). Do not modify Go source files. Full log below.\n" + blog
+        "API names, contract assertions). Do not modify Go source files. Preserve existing passing "
+        "tests; only create missing test files or edit files directly implicated by the failures.\n"
+        "Current test generation failures:\n"
+        + (failures or "(none)")
+        + "\nFull log below.\n"
+        + blog
     )
-    return _run_test_gen_stage(state, err_hint=err_hint, node_name="test_gen_repair")
+    return _run_test_gen_stage(
+        state,
+        err_hint=err_hint,
+        node_name="test_gen_repair",
+        repair_only_failed=True,
+    )
 
 
 def reviewer_node(state: MultiProjectState) -> dict[str, Any]:
@@ -931,6 +982,13 @@ def reviewer_node(state: MultiProjectState) -> dict[str, Any]:
     test_failures = list(test_state["test_gen_failures"])
     expected_count = int(test_state["test_gen_expected_count"])
     generated_count = int(test_state["test_gen_generated_count"])
+    missing_source_files: list[str] = []
+    if test_failures:
+        for failure in test_failures:
+            for test_path in re.findall(r"[\w./-]+_test\.go", str(failure)):
+                source_path = test_path[: -len("_test.go")] + ".go"
+                if not (go_out / source_path).is_file():
+                    missing_source_files.append(source_path)
     if not test_gen_ok or not test_quality_ok:
         over_specs = [
             f for f in test_failures if f.startswith("over_specified_tests:")
@@ -949,6 +1007,11 @@ def reviewer_node(state: MultiProjectState) -> dict[str, Any]:
             + summary
             + f"\nover_specified_tests={len(over_specs)}"
             + f"\nmissing_required_assertions={len(missing_required)}"
+            + (
+                "\nmissing_go_sources_for_tests=" + ", ".join(sorted(set(missing_source_files)))
+                if missing_source_files
+                else ""
+            )
             + "\n"
             + details
         )
@@ -970,6 +1033,7 @@ def reviewer_node(state: MultiProjectState) -> dict[str, Any]:
             "last_test_ok": False,
             "last_build_log": combined,
             "file_states": fstates,
+            "missing_source_files_for_tests": sorted(set(missing_source_files)),
             "repair_round": rep + 1,
             **test_state,
         }
@@ -1026,6 +1090,7 @@ def route_after_reviewer(
     test_ok = bool(state.get("last_test_ok", True))
     test_gen_ok = bool(state.get("test_gen_ok", False))
     test_quality_ok = bool(state.get("test_quality_ok", False))
+    missing_source_files = list(state.get("missing_source_files_for_tests") or [])
     max_r = int(state.get("max_repair_rounds") or 3)
     rr = int(state.get("repair_round") or 0)
     if not build_ok:
@@ -1035,6 +1100,13 @@ def route_after_reviewer(
         _wf.info("route_after_reviewer -> end (build failed rr=%d max=%d)", rr, max_r)
         return "end"
     if not test_gen_ok or not test_quality_ok:
+        if missing_source_files and rr < max_r:
+            _wf.info(
+                "route_after_reviewer -> global_repair (missing sources for tests rr=%d max=%d)",
+                rr,
+                max_r,
+            )
+            return "global_repair"
         if rr < max_r:
             _wf.info(
                 "route_after_reviewer -> test_gen_repair (tests quality/boundary issue rr=%d max=%d)",
