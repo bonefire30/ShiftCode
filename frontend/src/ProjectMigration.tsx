@@ -186,6 +186,29 @@ export function ProjectMigration() {
     [appendLog, hitl?.key, threadId]
   )
 
+  const testGenExpected =
+    typeof lastState?.test_gen_expected_count === 'number'
+      ? (lastState.test_gen_expected_count as number)
+      : null
+  const testGenGenerated =
+    typeof lastState?.test_gen_generated_count === 'number'
+      ? (lastState.test_gen_generated_count as number)
+      : null
+  const testGenOk =
+    typeof lastState?.test_gen_ok === 'boolean'
+      ? (lastState.test_gen_ok as boolean)
+      : null
+  const testGenFailures = Array.isArray(lastState?.test_gen_failures)
+    ? (lastState.test_gen_failures as string[])
+    : []
+  const testGenWarnings = Array.isArray(lastState?.test_gen_warnings)
+    ? (lastState.test_gen_warnings as string[])
+    : []
+  const testQualityOk =
+    typeof lastState?.test_quality_ok === 'boolean'
+      ? (lastState.test_quality_ok as boolean)
+      : null
+
   return (
     <div className="space-y-4">
       <p className="text-sm text-slate-500">
@@ -277,6 +300,48 @@ export function ProjectMigration() {
           停止
         </button>
       </div>
+
+      {(testGenExpected !== null ||
+        testGenGenerated !== null ||
+        testGenFailures.length > 0 ||
+        testGenWarnings.length > 0) && (
+        <div className="p-3 rounded border border-slate-800 bg-slate-900/30 text-xs text-slate-300 space-y-2">
+          <div className="flex flex-wrap gap-4">
+            <span>
+              test gen:{' '}
+              <span className={testGenOk ? 'text-emerald-400' : 'text-amber-400'}>
+                {testGenOk === null ? '?' : testGenOk ? 'ok' : 'needs repair'}
+              </span>
+            </span>
+            <span>expected: {testGenExpected ?? '?'}</span>
+            <span>generated: {testGenGenerated ?? '?'}</span>
+            <span>
+              quality:{' '}
+              <span className={testQualityOk ? 'text-emerald-400' : 'text-amber-400'}>
+                {testQualityOk === null ? '?' : testQualityOk ? 'ok' : 'needs repair'}
+              </span>
+            </span>
+          </div>
+          {testGenFailures.length > 0 && (
+            <div className="space-y-1">
+              {testGenFailures.map((failure, idx) => (
+                <div key={`${idx}-${failure}`} className="text-red-300">
+                  {failure}
+                </div>
+              ))}
+            </div>
+          )}
+          {testGenWarnings.length > 0 && (
+            <div className="space-y-1">
+              {testGenWarnings.map((warning, idx) => (
+                <div key={`${idx}-${warning}`} className="text-amber-300">
+                  {warning}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {error && (
         <div className="p-3 rounded border border-red-900/50 bg-red-950/40 text-red-200 text-sm">

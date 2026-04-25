@@ -111,11 +111,20 @@ def go_build_status(output_dir: Path) -> tuple[bool, str]:
     return p.returncode == 0, out or ""
 
 
+def count_go_test_files(output_dir: Path) -> int:
+    output_dir = output_dir.resolve()
+    if not output_dir.is_dir():
+        return 0
+    return sum(1 for p in output_dir.rglob("*_test.go") if p.is_file())
+
+
 def go_test_status(output_dir: Path) -> tuple[bool, str]:
     """(ok, combined_output). ok True iff `go test ./...` exit code is 0."""
     output_dir = output_dir.resolve()
     if not output_dir.is_dir():
         return False, f"Error: not a directory: {output_dir}"
+    if count_go_test_files(output_dir) == 0:
+        return False, "FAILED: no generated test files found."
     try:
         p = subprocess.run(
             ["go", "test", "-count=1", "./..."],

@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import sys
+import ctypes
 from pathlib import Path
 from typing import Any, MutableMapping
 
@@ -41,6 +42,25 @@ _LEVEL_COLORS: dict[str, str] = {
     "CRITICAL": "\033[35m",
 }
 _USE_ANSI = sys.stderr.isatty() and os.environ.get("NO_COLOR", "").strip() == ""
+
+
+def _ensure_windows_utf8_console() -> None:
+    """Best-effort UTF-8 console setup on Windows for future log rendering."""
+    if os.name != "nt":
+        return
+    try:
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        kernel32.SetConsoleOutputCP(65001)
+        kernel32.SetConsoleCP(65001)
+    except Exception:
+        pass
+    try:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 
 def get_workflow_thread_id() -> str:
@@ -188,6 +208,7 @@ def setup_logging(
 
     root = logging.getLogger()
     root.setLevel(min(level, logging.DEBUG))
+    _ensure_windows_utf8_console()
 
     # Clear default handlers (if any) only on first run
     root.handlers.clear()

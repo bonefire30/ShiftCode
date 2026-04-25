@@ -1,4 +1,4 @@
-"""
+﻿"""
 Multi-file Java->Go project migration: architect -> HITL -> module translate (layered) ->
 merge -> test-gen by module -> review -> global_repair / test_gen_repair.
 """
@@ -50,6 +50,10 @@ from logging_config import (
     setup_logging,
 )
 from workflow import run_module_agent, run_test_gen_module_agent
+from test_quality_guard import (
+    evaluate_test_quality,
+    extract_prompt_contract_checklist,
+)
 
 ROOT = Path(__file__).resolve().parent
 setup_logging()
@@ -81,6 +85,8 @@ class MultiProjectState(TypedDict, total=False):
     current_batch_idx: int
     file_states: dict[str, FileTranslationState]
     test_gen_states: dict[str, str]
+    module_translate_artifacts: dict[str, dict[str, Any]]
+    module_test_gen_artifacts: dict[str, dict[str, Any]]
     framework_flags: list[str]
     hitl_decisions: dict[str, str]
     last_build_ok: bool
@@ -91,6 +97,12 @@ class MultiProjectState(TypedDict, total=False):
     total_tokens: int
     migration_done: bool
     fatal: str
+    test_gen_failures: list[str]
+    test_gen_expected_count: int
+    test_gen_generated_count: int
+    test_gen_ok: bool
+    test_gen_warnings: list[str]
+    test_quality_ok: bool
 
 
 def _java_to_go_relpath(java_rel: str) -> str:
@@ -148,7 +160,7 @@ def _extract_package_from_prompt(prompt: str) -> str | None:
 def architect_node(state: MultiProjectState) -> dict[str, Any]:
     log = node_logger("architect")
     raw0 = (state.get("project_dir") or "").strip().replace("\\", "/")
-    log.info("→ 进入节点 project_dir=%s", raw0)
+    log.info("进入节点 project_dir=%s", raw0)
     t0 = time.perf_counter()
     raw = raw0
     if not raw:
@@ -193,7 +205,7 @@ def architect_node(state: MultiProjectState) -> dict[str, Any]:
     }
     ff = detect_framework_flags(infos)
     log.info(
-        "← 退出节点 耗时=%.3fs java_files=%d batches=%d modules=%d go_output_dir=%s framework_flags=%s",
+        "退出节点 耗时=%.3fs java_files=%d batches=%d modules=%d go_output_dir=%s framework_flags=%s",
         time.perf_counter() - t0,
         len(jfiles),
         len(batches),
@@ -212,12 +224,20 @@ def architect_node(state: MultiProjectState) -> dict[str, Any]:
         "type_mappings": dict(SymbolTable.java_to_go_types()),
         "file_states": fstates,
         "test_gen_states": {},
+        "module_translate_artifacts": {},
+        "module_test_gen_artifacts": {},
         "go_output_dir": str(out_dir),
         "go_module": mod,
         "framework_flags": ff,
         "last_build_log": init_msg,
         "repair_round": 0,
         "max_repair_rounds": int(state.get("max_repair_rounds") or 3),
+        "test_gen_failures": [],
+        "test_gen_expected_count": 0,
+        "test_gen_generated_count": 0,
+        "test_gen_ok": False,
+        "test_gen_warnings": [],
+        "test_quality_ok": False,
     }
 
 
@@ -225,14 +245,14 @@ def hitl_gateway_node(state: MultiProjectState) -> dict[str, Any]:
     log = node_logger("hitl_gateway")
     flags = state.get("framework_flags") or []
     decs: dict[str, str] = dict(state.get("hitl_decisions") or {})
-    log.info("→ 进入节点 framework_flags=%s hitl_decisions_keys=%s", flags, list(decs))
+    log.info("进入节点 framework_flags=%s hitl_decisions_keys=%s", flags, list(decs))
     if not flags:
-        log.info("← 无框架标志，跳过人机确认")
+        log.info("无框架标记，跳过人机确认")
         return {"hitl_decisions": decs}
     if not INTERRUPT_OK:
         for f in flags:
             decs.setdefault(f"fw_{f}", "accept_defaults")
-        log.warning("interrupt 不可用，已自动 accept_defaults flags=%s", flags)
+        log.warning("interrupt 不可用，自动使用 accept_defaults flags=%s", flags)
         return {"hitl_decisions": decs}
     for f in flags:
         k = f"fw_{f}"
@@ -243,9 +263,9 @@ def hitl_gateway_node(state: MultiProjectState) -> dict[str, Any]:
         d = cast(Any, interrupt)(
             {"key": k, "question": q, "framework": f, "type": "hitl"},
         )
-        log.info("← HITL 收到决策 key=%s", k)
+        log.info("HITL 收到决策 key=%s", k)
         return {"hitl_decisions": {**decs, k: d}}
-    log.info("← 退出节点，所有框架决策已就绪")
+    log.info("退出节点，所有框架决策已就绪")
     return {"hitl_decisions": decs}
 
 
@@ -271,7 +291,7 @@ def _translate_one_module(
     err_hints: dict[str, str],
     prev_states: dict[str, FileTranslationState],
     rag_lock: threading.Lock,
-) -> tuple[dict[str, FileTranslationState], int]:
+) -> tuple[dict[str, FileTranslationState], int, dict[str, Any]]:
     log = node_logger("translate_modules")
     label = f"mod{mod_idx}"
     java_sources: dict[str, str] = {}
@@ -312,7 +332,7 @@ def _translate_one_module(
     fstates: dict[str, FileTranslationState] = {}
     used_tok = 0
     try:
-        out_map, used_tok, success = run_module_agent(
+        out_map, used_tok, success, artifacts = run_module_agent(
             module_dep_order=mod_files,
             java_sources=java_sources,
             go_output_dir=go_out,
@@ -333,7 +353,14 @@ def _translate_one_module(
                 "errors": [str(e)],
                 "attempts": int(prev.get("attempts") or 0) + 1,
             }
-        return fstates, 0
+        return fstates, 0, {
+            "written_files": [],
+            "detected_new_or_changed_files": [],
+            "effective_output_files": [],
+            "declared_count": 0,
+            "diff_count": 0,
+            "effective_count": 0,
+        }
     for jr in mod_files:
         prev = dict(prev_states.get(jr) or {})
         fs0: FileTranslationState = {
@@ -349,8 +376,15 @@ def _translate_one_module(
             for jr, go in out_map.items():
                 if (go or "").strip():
                     ragger.add_file(jr, go)
-    log.info("run_module_agent 完成 mod=%s success=%s", label, success)
-    return fstates, used_tok
+    log.info(
+        "run_module_agent 完成 mod=%s success=%s declared_count=%d diff_count=%d effective_count=%d",
+        label,
+        success,
+        int(artifacts.get("declared_count") or 0),
+        int(artifacts.get("diff_count") or 0),
+        int(artifacts.get("effective_count") or 0),
+    )
+    return fstates, used_tok, artifacts
 
 
 def translate_modules_node(state: MultiProjectState) -> dict[str, Any]:
@@ -376,12 +410,15 @@ def translate_modules_node(state: MultiProjectState) -> dict[str, Any]:
     ragger = make_rag()
     fstates0: dict[str, FileTranslationState] = dict(state.get("file_states") or {})
     fstates: dict[str, FileTranslationState] = dict(fstates0)
+    module_translate_artifacts: dict[str, dict[str, Any]] = dict(
+        state.get("module_translate_artifacts") or {}
+    )
     err_hints = {p: (fs.get("last_error_hint") or "") for p, fs in fstates0.items()}
 
     modules = state.get("modules") or []
     g = state.get("dependency_graph") or {}
     layers = module_dependency_layers(modules, g) if modules else []
-    log.info("→ 进入节点 modules=%d 层数=%d", len(modules), len(layers))
+    log.info("进入节点 modules=%d 层数=%d", len(modules), len(layers))
     tok = int(state.get("total_tokens") or 0)
     workers = int(os.environ.get("TRANSLATE_WORKERS", "4"))
     rag_lock = threading.Lock()
@@ -407,13 +444,16 @@ def translate_modules_node(state: MultiProjectState) -> dict[str, Any]:
                 for midx in layer
             }
             for fut in as_completed(futs):
-                mpart, tadd = fut.result()
+                midx = futs[fut]
+                mpart, tadd, marts = fut.result()
                 tok += tadd
                 fstates.update(mpart)
-    log.info("← 退出节点 total_tokens=%d", tok)
+                module_translate_artifacts[f"mod{midx}"] = marts
+    log.info("退出节点 total_tokens=%d", tok)
     return {
         "file_states": fstates,
         "total_tokens": tok,
+        "module_translate_artifacts": module_translate_artifacts,
     }
 
 
@@ -433,85 +473,16 @@ def merge_all_node(state: MultiProjectState) -> dict[str, Any]:
     return {"symbol_table_data": st.to_dict()}
 
 
-def reviewer_node(state: MultiProjectState) -> dict[str, Any]:
-    log = node_logger("reviewer")
-    go_out = Path(state.get("go_output_dir") or "")
-    if not go_out.is_dir():
-        log.error("无输出目录，结束迁移")
-        return {
-            "last_build_ok": False,
-            "last_test_ok": False,
-            "last_build_log": "no output dir",
-            "migration_done": True,
-        }
-    ok, blog = go_build_status(go_out)
-    rep = int(state.get("repair_round") or 0)
-    fstates: dict[str, FileTranslationState] = dict(state.get("file_states") or {})
-    all_paths = list(fstates.keys())
-    if not ok:
-        snip = (blog or "")[:500]
-        log.warning(
-            "go build 失败 repair_round=%d->%d log 摘要(500): %s",
-            rep,
-            rep + 1,
-            snip.replace("\n", "\\n"),
-        )
-        hint = (blog or "")[:8000]
-        for p in all_paths:
-            fs = dict(fstates.get(p) or {"java_path": p})
-            fs["last_error_hint"] = hint
-            fstates[p] = fs
-        return {
-            "last_build_ok": False,
-            "last_test_ok": False,
-            "last_build_log": blog,
-            "file_states": fstates,
-            "repair_round": rep + 1,
-        }
-    test_ok, test_log = go_test_status(go_out)
-    if not test_ok:
-        snip = (test_log or "")[:500]
-        log.warning(
-            "go test 失败 repair_round=%d->%d log 摘要(500): %s",
-            rep,
-            rep + 1,
-            snip.replace("\n", "\\n"),
-        )
-        hint = (test_log or "")[:8000]
-        combined = (
-            "--- go build OK ---\n"
-            + (blog or "")
-            + "\n--- go test FAILED ---\n"
-            + (test_log or "")
-        )
-        for p in all_paths:
-            fs = dict(fstates.get(p) or {"java_path": p})
-            fs["last_error_hint"] = hint
-            fstates[p] = fs
-        return {
-            "last_build_ok": True,
-            "last_test_ok": False,
-            "last_build_log": combined,
-            "file_states": fstates,
-            "repair_round": rep + 1,
-        }
-    log.info("go build + go test 成功 repair_round 置 0")
-    return {
-        "last_build_ok": True,
-        "last_test_ok": True,
-        "last_build_log": (blog or "OK") + "\n--- go test ---\n" + (test_log or ""),
-        "repair_round": 0,
-    }
-
-
 def _test_gen_one_module(
     midx: int,
     mod_files: list[str],
     pr: Path,
     go_out: Path,
     project_migration_prompt: str,
+    prompt_contract_checklist: list[str],
     err_hint: str,
-) -> tuple[dict[str, str], int, bool]:
+    translate_artifacts: dict[str, Any],
+) -> tuple[dict[str, str], int, bool, int, int, list[str], list[str], dict[str, Any]]:
     log = node_logger("test_gen_modules")
     java_sources: dict[str, str] = {}
     for jr in mod_files:
@@ -521,63 +492,112 @@ def _test_gen_one_module(
             continue
         info = parse_java_file(pr, jpath)
         java_sources[jr] = info.source_text
+    module_java_lc = "\n".join(java_sources.values()).lower()
+
+    def _module_checklist_items(all_items: list[str]) -> list[str]:
+        if not all_items:
+            return []
+        keep: list[str] = []
+        for item in all_items:
+            low = item.lower()
+            if "runpayment" in low and "runpayment" not in module_java_lc:
+                continue
+            if "logtransaction" in low and "logtransaction" not in module_java_lc:
+                continue
+            if "field id" in low and " id" not in module_java_lc and "id " not in module_java_lc:
+                continue
+            keep.append(item)
+        return keep
+
+    module_checklist = _module_checklist_items(prompt_contract_checklist)
     go_map = _build_go_package_map(project_migration_prompt, mod_files)
     label = f"mod{midx}"
     try:
-        out, used, ok = run_test_gen_module_agent(
+        expected_go_files = list(translate_artifacts.get("effective_output_files") or [])
+        out, used, ok, expected_count, generated_count, failures, test_artifacts = run_test_gen_module_agent(
             module_dep_order=mod_files,
             java_sources=java_sources,
             go_output_dir=go_out,
             go_package_map=go_map,
+            migration_prompt_text=project_migration_prompt,
+            prompt_contract_checklist=module_checklist,
+            expected_go_files=expected_go_files,
             module_name=label,
             err_hint=err_hint,
         )
     except Exception as e:  # noqa: BLE001
         log.error("run_test_gen_module_agent 失败 %s", label, exc_info=True)
-        return {}, 0, False
-    return out, used, ok
+        return (
+            {},
+            0,
+            False,
+            len(mod_files),
+            0,
+            [f"module {label}: {e}"],
+            [],
+            {
+                "written_files": [],
+                "detected_new_or_changed_files": [],
+                "effective_output_files": [],
+                "expected_output_files": [],
+                "declared_count": 0,
+                "diff_count": 0,
+                "effective_count": 0,
+            },
+        )
 
+    go_sources: dict[str, str] = {}
+    effective_go_files = list(translate_artifacts.get("effective_output_files") or [])
+    if not effective_go_files:
+        effective_go_files = [_java_to_go_relpath(jr) for jr in mod_files]
+    for gr in effective_go_files:
+        gp = go_out / gr
+        go_sources[gr] = gp.read_text(encoding="utf-8", errors="replace") if gp.is_file() else ""
 
-def test_gen_modules_node(state: MultiProjectState) -> dict[str, Any]:
-    log = node_logger("test_gen_modules")
-    if state.get("fatal"):
-        return {}
-    pr = (ROOT / (state.get("project_dir") or "")).resolve()
-    go_out = Path(state.get("go_output_dir") or "")
-    if not go_out.is_dir():
-        return {"fatal": "missing go_output_dir", "migration_done": True}
-    _prompt_file = pr / "migration_prompt.txt"
-    project_migration_prompt = (
-        _prompt_file.read_text(encoding="utf-8").strip()
-        if _prompt_file.is_file()
-        else ""
+    quality_failures, quality_warnings, quality_ok = evaluate_test_quality(
+        module_name=label,
+        prompt_text=project_migration_prompt,
+        prompt_contract_checklist=module_checklist,
+        java_sources=java_sources,
+        go_sources=go_sources,
+        generated_tests=out,
     )
-    modules = state.get("modules") or []
-    tok = int(state.get("total_tokens") or 0)
-    tgen: dict[str, str] = dict(state.get("test_gen_states") or {})
-    err0 = ""
-    workers = int(os.environ.get("TEST_GEN_WORKERS", "8"))
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        futs = {
-            ex.submit(
-                _test_gen_one_module,
-                midx,
-                mod,
-                pr,
-                go_out,
-                project_migration_prompt,
-                err0,
-            ): midx
-            for midx, mod in enumerate(modules)
-        }
-        for fut in as_completed(futs):
-            out, tadd, _ok = fut.result()
-            tok += tadd
-            tgen.update(out)
-    log.info("test_gen 完成 total_tokens~=%d test_files=%d", tok, len(tgen))
+    merged_failures = [*failures, *quality_failures]
+    return (
+        out,
+        used,
+        ok and quality_ok and not merged_failures,
+        expected_count,
+        generated_count,
+        merged_failures,
+        quality_warnings,
+        test_artifacts,
+    )
+
+
+def _summarize_test_gen_state(
+    *,
+    tok: int,
+    tgen: dict[str, str],
+    expected_count: int,
+    generated_count: int,
+    failures: list[str],
+    warnings: list[str],
+) -> dict[str, Any]:
+    quality_failures = [
+        f
+        for f in failures
+        if f.startswith("over_specified_tests:") or f.startswith("missing_required_assertions:")
+    ]
     return {
         "test_gen_states": tgen,
         "total_tokens": tok,
+        "test_gen_expected_count": expected_count,
+        "test_gen_generated_count": generated_count,
+        "test_gen_failures": failures,
+        "test_gen_warnings": warnings,
+        "test_quality_ok": not quality_failures,
+        "test_gen_ok": expected_count > 0 and generated_count == expected_count and not failures,
     }
 
 
@@ -593,9 +613,16 @@ def _global_repair_one_module(
     ragger: Any,
     prev_states: dict[str, FileTranslationState],
     rag_lock: threading.Lock,
-) -> tuple[dict[str, FileTranslationState], int]:
+) -> tuple[dict[str, FileTranslationState], int, dict[str, Any]]:
     if not mod_files:
-        return {}, 0
+        return {}, 0, {
+            "written_files": [],
+            "detected_new_or_changed_files": [],
+            "effective_output_files": [],
+            "declared_count": 0,
+            "diff_count": 0,
+            "effective_count": 0,
+        }
     java_sources: dict[str, str] = {}
     for jr in mod_files:
         jpath = pr / jr.replace("/", os.sep)
@@ -632,7 +659,7 @@ def _global_repair_one_module(
     )
     fstates: dict[str, FileTranslationState] = {}
     try:
-        out_map, used_tok, success = run_module_agent(
+        out_map, used_tok, success, artifacts = run_module_agent(
             module_dep_order=mod_files,
             java_sources=java_sources,
             go_output_dir=go_out,
@@ -652,7 +679,14 @@ def _global_repair_one_module(
                 "errors": [str(e)],
                 "attempts": int(prev.get("attempts") or 0) + 1,
             }
-        return fstates, 0
+        return fstates, 0, {
+            "written_files": [],
+            "detected_new_or_changed_files": [],
+            "effective_output_files": [],
+            "declared_count": 0,
+            "diff_count": 0,
+            "effective_count": 0,
+        }
     for jr in mod_files:
         prev2 = dict(prev_states.get(jr) or {})
         fstates[jr] = {
@@ -667,7 +701,7 @@ def _global_repair_one_module(
             for jr, g in out_map.items():
                 if (g or "").strip():
                     ragger.add_file(jr, g)
-    return fstates, used_tok
+    return fstates, used_tok, artifacts
 
 
 def global_repair_node(state: MultiProjectState) -> dict[str, Any]:
@@ -693,6 +727,9 @@ def global_repair_node(state: MultiProjectState) -> dict[str, Any]:
     )
     fstates0: dict[str, FileTranslationState] = dict(state.get("file_states") or {})
     fstates: dict[str, FileTranslationState] = dict(fstates0)
+    module_translate_artifacts: dict[str, dict[str, Any]] = dict(
+        state.get("module_translate_artifacts") or {}
+    )
     tok = int(state.get("total_tokens") or 0)
     modules = state.get("modules") or []
     ragger = make_rag()
@@ -721,38 +758,57 @@ def global_repair_node(state: MultiProjectState) -> dict[str, Any]:
             for midx, mod in enumerate(modules)
         }
         for fut in as_completed(futs):
-            mpart, tadd = fut.result()
+            midx = futs[fut]
+            mpart, tadd, marts = fut.result()
             tok += tadd
             fstates.update(mpart)
+            module_translate_artifacts[f"mod{midx}"] = marts
     prev = state.get("last_build_log") or ""
     return {
         "file_states": fstates,
         "total_tokens": tok,
+        "module_translate_artifacts": module_translate_artifacts,
         "last_build_log": prev + "\n[global_repair: module agent 重试一轮]",
     }
 
 
-def test_gen_repair_node(state: MultiProjectState) -> dict[str, Any]:
-    log = node_logger("test_gen_repair")
+def _run_test_gen_stage(
+    state: MultiProjectState,
+    *,
+    err_hint: str,
+    node_name: str,
+) -> dict[str, Any]:
+    log = node_logger(node_name)
+    if state.get("fatal"):
+        return {}
     pr = (ROOT / (state.get("project_dir") or "")).resolve()
     go_out = Path(state.get("go_output_dir") or "")
     if not go_out.is_dir():
-        return {}
-    blog = (state.get("last_build_log") or "")[:8000]
+        return {"fatal": "missing go_output_dir", "migration_done": True}
     _prompt_file = pr / "migration_prompt.txt"
     project_migration_prompt = (
         _prompt_file.read_text(encoding="utf-8").strip()
         if _prompt_file.is_file()
         else ""
     )
+    prompt_contract_checklist = extract_prompt_contract_checklist(project_migration_prompt)
     modules = state.get("modules") or []
     tok = int(state.get("total_tokens") or 0)
     tgen: dict[str, str] = dict(state.get("test_gen_states") or {})
-    workers = int(os.environ.get("TEST_GEN_WORKERS", "8"))
-    err_hint = (
-        "The Go implementation compiles. Fix only test assumptions (import paths, package, "
-        "API names). Full log below.\n" + blog
+    module_translate_artifacts: dict[str, dict[str, Any]] = dict(
+        state.get("module_translate_artifacts") or {}
     )
+    module_test_gen_artifacts: dict[str, dict[str, Any]] = dict(
+        state.get("module_test_gen_artifacts") or {}
+    )
+    expected_count = 0
+    generated_count = 0
+    failures: list[str] = []
+    warnings: list[str] = []
+    declared_count = 0
+    diff_count = 0
+    effective_count = 0
+    workers = int(os.environ.get("TEST_GEN_WORKERS", "8"))
     with ThreadPoolExecutor(max_workers=workers) as ex:
         futs = {
             ex.submit(
@@ -762,52 +818,247 @@ def test_gen_repair_node(state: MultiProjectState) -> dict[str, Any]:
                 pr,
                 go_out,
                 project_migration_prompt,
+                prompt_contract_checklist,
                 err_hint,
+                module_translate_artifacts.get(f"mod{midx}") or {},
             ): midx
             for midx, mod in enumerate(modules)
         }
         for fut in as_completed(futs):
-            out, tadd, _ok = fut.result()
+            midx = futs[fut]
+            (
+                out,
+                tadd,
+                ok,
+                expected_add,
+                generated_add,
+                module_failures,
+                module_warnings,
+                module_artifacts,
+            ) = fut.result()
             tok += tadd
             tgen.update(out)
+            expected_count += expected_add
+            generated_count += generated_add
+            declared_count += int(module_artifacts.get("declared_count") or 0)
+            diff_count += int(module_artifacts.get("diff_count") or 0)
+            effective_count += int(module_artifacts.get("effective_count") or 0)
+            module_test_gen_artifacts[f"mod{midx}"] = module_artifacts
+            if not ok:
+                failures.extend(module_failures)
+            warnings.extend(module_warnings)
+    log.info(
+        "%s completed total_tokens~=%d expected_tests=%d generated_tests=%d declared_count=%d diff_count=%d effective_count=%d failed_modules=%d",
+        node_name,
+        tok,
+        expected_count,
+        generated_count,
+        declared_count,
+        diff_count,
+        effective_count,
+        len(failures),
+    )
+    out = _summarize_test_gen_state(
+        tok=tok,
+        tgen=tgen,
+        expected_count=expected_count,
+        generated_count=generated_count,
+        failures=failures,
+        warnings=warnings,
+    )
+    out["module_test_gen_artifacts"] = module_test_gen_artifacts
+    return out
+
+
+def test_gen_modules_node(state: MultiProjectState) -> dict[str, Any]:
+    return _run_test_gen_stage(state, err_hint="", node_name="test_gen_modules")
+
+
+def test_gen_repair_node(state: MultiProjectState) -> dict[str, Any]:
+    go_out = Path(state.get("go_output_dir") or "")
+    if not go_out.is_dir():
+        return {}
+    blog = (state.get("last_build_log") or "")[:8000]
+    err_hint = (
+        "The Go implementation compiles. Fix only tests and test assumptions (imports, package, "
+        "API names, contract assertions). Do not modify Go source files. Full log below.\n" + blog
+    )
+    return _run_test_gen_stage(state, err_hint=err_hint, node_name="test_gen_repair")
+
+
+def reviewer_node(state: MultiProjectState) -> dict[str, Any]:
+    log = node_logger("reviewer")
+    go_out = Path(state.get("go_output_dir") or "")
+    test_state = {
+        "test_gen_ok": bool(state.get("test_gen_ok", False)),
+        "test_gen_failures": list(state.get("test_gen_failures") or []),
+        "test_gen_warnings": list(state.get("test_gen_warnings") or []),
+        "test_quality_ok": bool(state.get("test_quality_ok", False)),
+        "test_gen_expected_count": int(state.get("test_gen_expected_count") or 0),
+        "test_gen_generated_count": int(state.get("test_gen_generated_count") or 0),
+    }
+    if not go_out.is_dir():
+        log.error("reviewer missing go_output_dir")
+        return {
+            "last_build_ok": False,
+            "last_test_ok": False,
+            "last_build_log": "no output dir",
+            "migration_done": True,
+            **test_state,
+        }
+    ok, blog = go_build_status(go_out)
+    rep = int(state.get("repair_round") or 0)
+    fstates: dict[str, FileTranslationState] = dict(state.get("file_states") or {})
+    all_paths = list(fstates.keys())
+    if not ok:
+        hint = (blog or "")[:8000]
+        log.warning("go build failed repair_round=%d->%d", rep, rep + 1)
+        for p in all_paths:
+            fs = dict(fstates.get(p) or {"java_path": p})
+            fs["last_error_hint"] = hint
+            fstates[p] = fs
+        return {
+            "last_build_ok": False,
+            "last_test_ok": False,
+            "last_build_log": blog,
+            "file_states": fstates,
+            "repair_round": rep + 1,
+            **test_state,
+        }
+
+    test_gen_ok = bool(test_state["test_gen_ok"])
+    test_quality_ok = bool(test_state["test_quality_ok"])
+    test_failures = list(test_state["test_gen_failures"])
+    expected_count = int(test_state["test_gen_expected_count"])
+    generated_count = int(test_state["test_gen_generated_count"])
+    if not test_gen_ok or not test_quality_ok:
+        over_specs = [
+            f for f in test_failures if f.startswith("over_specified_tests:")
+        ]
+        missing_required = [
+            f for f in test_failures if f.startswith("missing_required_assertions:")
+        ]
+        summary = (
+            f"Generated tests incomplete: expected={expected_count}, generated={generated_count}."
+        )
+        details = "\n".join(test_failures) if test_failures else "No detailed test generation failures recorded."
+        combined = (
+            "--- go build OK ---\n"
+            + (blog or "")
+            + "\n--- test generation incomplete ---\n"
+            + summary
+            + f"\nover_specified_tests={len(over_specs)}"
+            + f"\nmissing_required_assertions={len(missing_required)}"
+            + "\n"
+            + details
+        )
+        hint = combined[:8000]
+        log.warning(
+            "test generation incomplete repair_round=%d->%d expected=%d generated=%d failures=%d",
+            rep,
+            rep + 1,
+            expected_count,
+            generated_count,
+            len(test_failures),
+        )
+        for p in all_paths:
+            fs = dict(fstates.get(p) or {"java_path": p})
+            fs["last_error_hint"] = hint
+            fstates[p] = fs
+        return {
+            "last_build_ok": True,
+            "last_test_ok": False,
+            "last_build_log": combined,
+            "file_states": fstates,
+            "repair_round": rep + 1,
+            **test_state,
+        }
+
+    test_ok, test_log = go_test_status(go_out)
+    if not test_ok:
+        hint = (test_log or "")[:8000]
+        combined = (
+            "--- go build OK ---\n"
+            + (blog or "")
+            + "\n--- go test FAILED ---\n"
+            + (test_log or "")
+        )
+        log.warning("go test failed repair_round=%d->%d", rep, rep + 1)
+        for p in all_paths:
+            fs = dict(fstates.get(p) or {"java_path": p})
+            fs["last_error_hint"] = hint
+            fstates[p] = fs
+        return {
+            "last_build_ok": True,
+            "last_test_ok": False,
+            "last_build_log": combined,
+            "file_states": fstates,
+            "repair_round": rep + 1,
+            **test_state,
+        }
+
+    log.info(
+        "go build + go test succeeded repair_round reset expected_tests=%d generated_tests=%d failures=%d",
+        expected_count,
+        generated_count,
+        len(test_failures),
+    )
     return {
-        "test_gen_states": tgen,
-        "total_tokens": tok,
+        "last_build_ok": True,
+        "last_test_ok": True,
+        "last_build_log": (blog or "OK") + "\n--- go test ---\n" + (test_log or ""),
+        "repair_round": 0,
+        **test_state,
     }
 
 
 def route_after_reviewer(
     state: MultiProjectState,
 ) -> Literal["end", "global_repair", "test_gen_repair"]:
-    _wf.debug("route_after_reviewer 评估中")
     if state.get("fatal") or state.get("migration_done"):
-        _wf.info("路由 -> end (fatal=%s migration_done=%s)", state.get("fatal"), state.get("migration_done"))
+        _wf.info(
+            "route_after_reviewer -> end (fatal=%s migration_done=%s)",
+            state.get("fatal"),
+            state.get("migration_done"),
+        )
         return "end"
     build_ok = bool(state.get("last_build_ok", False))
     test_ok = bool(state.get("last_test_ok", True))
+    test_gen_ok = bool(state.get("test_gen_ok", False))
+    test_quality_ok = bool(state.get("test_quality_ok", False))
     max_r = int(state.get("max_repair_rounds") or 3)
     rr = int(state.get("repair_round") or 0)
     if not build_ok:
         if rr < max_r:
-            _wf.info("路由 -> global_repair (build 失败 rr=%d max=%d)", rr, max_r)
+            _wf.info("route_after_reviewer -> global_repair (build failed rr=%d max=%d)", rr, max_r)
             return "global_repair"
-        _wf.info("路由 -> end (build 失败且修复用尽 rr=%d)", rr)
+        _wf.info("route_after_reviewer -> end (build failed rr=%d max=%d)", rr, max_r)
+        return "end"
+    if not test_gen_ok or not test_quality_ok:
+        if rr < max_r:
+            _wf.info(
+                "route_after_reviewer -> test_gen_repair (tests quality/boundary issue rr=%d max=%d)",
+                rr,
+                max_r,
+            )
+            return "test_gen_repair"
+        _wf.info("route_after_reviewer -> end (tests quality/boundary issue rr=%d max=%d)", rr, max_r)
         return "end"
     if not test_ok:
         if rr < max_r and rr <= (max_r // 2):
             _wf.info(
-                "路由 -> global_repair (test 失败 early rr=%d max=%d half=%d)",
+                "route_after_reviewer -> global_repair (test failure early rr=%d max=%d half=%d)",
                 rr,
                 max_r,
                 max_r // 2,
             )
             return "global_repair"
         if rr < max_r:
-            _wf.info("路由 -> test_gen_repair (test 失败 rr=%d max=%d)", rr, max_r)
+            _wf.info("route_after_reviewer -> test_gen_repair (test failure rr=%d max=%d)", rr, max_r)
             return "test_gen_repair"
-        _wf.info("路由 -> end (test 失败且修复用尽 rr=%d)", rr)
+        _wf.info("route_after_reviewer -> end (test failure rr=%d max=%d)", rr, max_r)
         return "end"
-    _wf.info("路由 -> end (成功)")
+    _wf.info("route_after_reviewer -> end (success)")
     return "end"
 
 
@@ -920,7 +1171,7 @@ def resume_project_migrate(
             if not step:
                 continue
             for node_id, out in step.items():
-                _wf.debug("恢复步 node=%s", node_id)
+                _wf.debug("恢复步骤 node=%s", node_id)
                 yield str(node_id), {**out, "thread_id": thread_id}
     finally:
         detach_per_run_file_handler(run_log)
