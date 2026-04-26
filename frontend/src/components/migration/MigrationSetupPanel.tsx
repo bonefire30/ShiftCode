@@ -1,4 +1,18 @@
-import type { CaseItem } from './types'
+import type { CaseItem, LlmEvaluationProfile } from './types'
+
+const LLM_EVALUATION_PROFILES: Array<{
+  value: LlmEvaluationProfile
+  label: string
+  description: string
+}> = [
+  { value: 'minimax', label: 'minimax', description: 'MiniMax-M2.7 · low-cost candidate' },
+  { value: 'deepseek', label: 'deepseek', description: 'deepseek-v4-flash · code-focused candidate' },
+  {
+    value: 'codex-proxy',
+    label: 'codex-proxy',
+    description: 'GPT-5.3 Codex · high-quality baseline',
+  },
+]
 
 type Props = {
   cases: CaseItem[]
@@ -8,6 +22,8 @@ type Props = {
   setMaxRepair: (value: number) => void
   goModule: string
   setGoModule: (value: string) => void
+  llmProfile: LlmEvaluationProfile
+  setLlmProfile: (value: LlmEvaluationProfile) => void
   running: boolean
   analyzing: boolean
   onAnalyze: () => void
@@ -23,6 +39,8 @@ export function MigrationSetupPanel({
   setMaxRepair,
   goModule,
   setGoModule,
+  llmProfile,
+  setLlmProfile,
   running,
   analyzing,
   onAnalyze,
@@ -87,6 +105,24 @@ export function MigrationSetupPanel({
           disabled={running}
           placeholder="m.example/pkg"
         />
+      </label>
+      <label className="flex flex-col gap-1 text-sm min-w-[260px]">
+        <span className="text-slate-400">LLM profile for evaluation</span>
+        <select
+          className="bg-slate-900 border border-slate-700 rounded px-3 py-2"
+          value={llmProfile}
+          onChange={(e) => setLlmProfile(e.target.value as LlmEvaluationProfile)}
+          disabled={running}
+        >
+          {LLM_EVALUATION_PROFILES.map((profile) => (
+            <option key={profile.value} value={profile.value}>
+              {profile.label} — {profile.description}
+            </option>
+          ))}
+        </select>
+        <span className="text-xs text-slate-500">
+          仅用于本次转换评估；不显示 API key，也不代表模型已被完全支持。
+        </span>
       </label>
       <button
         type="button"

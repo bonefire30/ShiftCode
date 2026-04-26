@@ -16,12 +16,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from logging_config import setup_logging
+from security import sanitize_exception
 from multi_agent_workflow import (
     COMMAND_OK,
     analyze_project,
     resume_project_migrate,
     stream_project_workflow,
 )
+from llm_profiles import get_profile, list_profiles, validate_profile_runtime
 
 setup_logging()
 _log = logging.getLogger("shiftcode.server")
@@ -94,6 +96,8 @@ def _serialize_project_state(state: dict[str, Any]) -> dict[str, Any]:
             "test_gen_failures",
             "test_gen_warnings",
             "test_quality_ok",
+            "llm_profile",
+            "llm_run_metadata",
         }:
             out[key] = value
         elif isinstance(value, (bool, int, float, str)) or value is None:
@@ -127,7 +131,7 @@ def _resolve_project_dir(path: str) -> Path:
     return raw
 
 
-def _sse_project_migrate(project_rel: str, max_repair: int, go_module: str | None) -> Any:
+def _sse_project_migrate(project_rel: str, max_repair: int, go_module: str | None, llm_profile: str | None) -> Any:
     project_dir = (ROOT / project_rel).resolve()
     root_dir = ROOT.resolve()
     if not str(project_dir).startswith(str(root_dir)):
@@ -139,16 +143,20 @@ def _sse_project_migrate(project_rel: str, max_repair: int, go_module: str | Non
 
     def run_graph() -> None:
         _log.info(
-            "SSE project migrate started project=%s max_repair=%s go_module=%r",
+            "SSE project migrate started project=%s max_repair=%s go_module=%r llm_profile=%r",
             project_rel,
             max_repair,
             go_module,
+            llm_profile,
         )
         try:
+            profile = get_profile(llm_profile)
+            validate_profile_runtime(profile)
             for node_id, out in stream_project_workflow(
                 project_dir,
                 max_repair_rounds=max_repair,
                 go_module=go_module,
+                llm_profile=profile.profile,
             ):
                 q.put(
                     {
@@ -160,7 +168,7 @@ def _sse_project_migrate(project_rel: str, max_repair: int, go_module: str | Non
             q.put({"type": "done"})
         except Exception as exc:  # noqa: BLE001
             _log.error("project migrate SSE failed", exc_info=True)
-            q.put({"type": "error", "message": str(exc)})
+            q.put({"type": "error", "message": sanitize_exception(exc)})
 
     threading.Thread(target=run_graph, daemon=True).start()
 
@@ -179,6 +187,11 @@ def health() -> dict[str, str]:
 @app.get("/api/cases")
 def list_cases() -> list[dict[str, str]]:
     return _discover_cases()
+
+
+@app.get("/api/llm-profiles")
+def api_list_llm_profiles() -> list[dict[str, Any]]:
+    return list_profiles()
 
 
 @app.post("/api/project/analyze")
@@ -206,24 +219,32 @@ def project_migrate_stream(
     ),
     max_repair: int = Query(3, ge=1, le=20, description="Max repair rounds"),
     go_module: str | None = Query(None, description="Override go mod module path"),
+    llm_profile: str | None = Query(None, description="LLM profile for evaluation"),
 ) -> StreamingResponse:
     _log.info(
-        "GET /api/project/migrate/stream project=%r max_repair=%s go_module=%r",
+        "GET /api/project/migrate/stream project=%r max_repair=%s go_module=%r llm_profile=%r",
         project,
         max_repair,
         go_module,
+        llm_profile,
     )
 
     def gen() -> Any:
         try:
             rel = project.replace("\\", "/").strip()
-            yield from _sse_project_migrate(rel, max_repair, go_module)
+            yield from _sse_project_migrate(rel, max_repair, go_module, llm_profile)
+        except ValueError as exc:
+            payload = {"type": "error", "message": sanitize_exception(exc)}
+            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        except RuntimeError as exc:
+            payload = {"type": "error", "message": sanitize_exception(exc)}
+            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
         except FileNotFoundError as exc:
-            payload = {"type": "error", "message": str(exc)}
+            payload = {"type": "error", "message": sanitize_exception(exc)}
             yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
         except Exception as exc:  # noqa: BLE001
             _log.error("project migrate stream failed", exc_info=True)
-            payload = {"type": "error", "message": str(exc)}
+            payload = {"type": "error", "message": sanitize_exception(exc)}
             yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
