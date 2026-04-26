@@ -5,6 +5,37 @@ multi-agent workflow. The product now supports only the project migration
 path: analyze a Java project, translate modules, generate Go tests, and repair
 the output until `go build` / `go test` pass.
 
+## 当前开发进度
+
+ShiftCode 当前处于 JAVA2GO 项目级迁移工作流的早期 Beta 阶段。核心目标不是
+宣称完整 Java 兼容，而是把每次转换做得可验证、可解释、可回归。
+
+已经完成的能力：
+
+- 项目级 Java 输入分析：AST 解析、依赖图构建、模块拆分和符号表上下文。
+- LLM 驱动的 Go 代码生成和 `*_test.go` 测试生成。
+- `go build ./...` / `go test ./...` 审查和有限自动修复循环。
+- 固定三档 LLM 评估 profile：`minimax`、`deepseek`、`codex-proxy`。
+- LLM 运行元数据记录：profile、provider、model、base URL、延迟、token usage、
+  `llmCallStatus` 和 `conversionStatus`。
+- mock/dry-run 路径，常规自动化测试不会调用真实 LLM API。
+- tier5 payment polymorphism 三 profile smoke 验收报告。
+
+当前质量证据：
+
+- 单元测试：`python -m unittest discover -s tests`，31 个测试通过。
+- Python 编译检查覆盖核心后端文件和 smoke 脚本。
+- 最终 smoke 样例：`run_logs/tier5_three_profile_smoke_20260426_163606.json`。
+- 已知限制和 smoke 验收口径记录在 `docs/known-limitations.md`、
+  `docs/testing-strategy.md` 和 `docs/llm-evaluation-acceptance.md`。
+
+当前限制：
+
+- smoke pass 不等于完整 Java 语义等价。
+- 当前只验证了有限 fixture，真实项目迁移仍需要人工 review。
+- LLM profile 是评估候选，不是通用模型网关，也不代表 provider-wide support。
+- unsupported、partial 和 failed conversion 必须继续明确标记，不能被 LLM 调用成功掩盖。
+
 ## What It Does
 
 - Analyzes Java projects with AST parsing and dependency graph construction.
