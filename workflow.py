@@ -12,9 +12,9 @@ import json
 import hashlib
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any, cast
-from urllib.parse import urlparse
 
 try:
     from dotenv import load_dotenv
@@ -32,6 +32,7 @@ from learnings import search_learnings
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from openai import BadRequestError, OpenAI
+from llm_profiles import LLMProfile, get_profile, llm_metadata, mock_enabled, require_api_key, validate_profile_runtime
 
 try:
     from langchain_openai import ChatOpenAI
@@ -44,38 +45,37 @@ DEFAULT_TRANSLATE_STEPS = 18
 DEFAULT_TEST_GEN_STEPS = 16
 
 
-def _is_deepseek_provider() -> bool:
-    base_url = (os.environ.get("OPENAI_BASE_URL") or "").strip()
-    if not base_url:
-        return False
-    try:
-        parsed = urlparse(base_url)
-    except Exception:  # noqa: BLE001
-        return "api.deepseek.com" in base_url.lower()
-    return "api.deepseek.com" in (parsed.netloc or parsed.path).lower()
+def _profile_for_name(llm_profile: str | None = None) -> LLMProfile:
+    return get_profile(llm_profile)
 
 
-def _build_translator(*, streaming: bool = True) -> Any:
+def _build_translator(*, streaming: bool = True, llm_profile: str | None = None) -> Any:
     if ChatOpenAI is None:
         raise RuntimeError("Install langchain-openai: pip install -r requirements.txt")
+    profile = _profile_for_name(llm_profile)
+    validate_profile_runtime(profile)
+    api_key = require_api_key(profile, allow_mock=False)
     kwargs: dict[str, Any] = {
-        "model": os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
-        "temperature": 0.1,
+        "model": profile.model,
+        "temperature": profile.temperature,
         "streaming": streaming,
+        "api_key": api_key,
     }
-    if os.environ.get("OPENAI_BASE_URL"):
-        kwargs["base_url"] = os.environ["OPENAI_BASE_URL"]
-    if os.environ.get("OPENAI_API_KEY"):
-        kwargs["api_key"] = os.environ["OPENAI_API_KEY"]
+    if profile.base_url:
+        kwargs["base_url"] = profile.base_url
+    if profile.timeout_ms:
+        kwargs["timeout"] = profile.timeout_ms / 1000
     return ChatOpenAI(**kwargs)
 
 
-def _build_deepseek_client() -> OpenAI:
-    kwargs: dict[str, Any] = {}
-    if os.environ.get("OPENAI_BASE_URL"):
-        kwargs["base_url"] = os.environ["OPENAI_BASE_URL"]
-    if os.environ.get("OPENAI_API_KEY"):
-        kwargs["api_key"] = os.environ["OPENAI_API_KEY"]
+def _build_openai_client(profile: LLMProfile) -> OpenAI:
+    validate_profile_runtime(profile)
+    kwargs: dict[str, Any] = {
+        "api_key": require_api_key(profile, allow_mock=False),
+        "timeout": profile.timeout_ms / 1000,
+    }
+    if profile.base_url:
+        kwargs["base_url"] = profile.base_url
     return OpenAI(**kwargs)
 
 
@@ -216,9 +216,11 @@ def _run_deepseek_tool_loop(
     max_no_progress_steps: int = 5,
     enable_thinking: bool | None = None,
     config: RunnableConfig | None = None,
-) -> tuple[int, bool]:
+    llm_profile: str | None = None,
+) -> tuple[int, bool, int]:
     del config
-    client = _build_deepseek_client()
+    profile = _profile_for_name(llm_profile)
+    client = _build_openai_client(profile)
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
@@ -227,6 +229,7 @@ def _run_deepseek_tool_loop(
     by_name: dict[str, Any] = {t.name: t for t in tools}  # type: ignore[attr-defined]
     total = 0
     success = False
+    started = time.perf_counter()
     no_progress_steps = 0
     thinking_enabled = (
         str(os.environ.get("DEEPSEEK_THINKING", "0")).strip().lower() not in {"0", "false", "no", "off"}
@@ -235,7 +238,7 @@ def _run_deepseek_tool_loop(
     )
     for step_idx in range(1, max_steps + 1):
         request: dict[str, Any] = {
-            "model": os.environ.get("OPENAI_MODEL", "deepseek-v4-flash"),
+            "model": profile.model,
             "messages": messages,
             "tools": tool_specs,
             "parallel_tool_calls": True,
@@ -307,7 +310,7 @@ def _run_deepseek_tool_loop(
             break
         if no_progress_steps >= max_no_progress_steps:
             break
-    return total, success
+    return total, success, int((time.perf_counter() - started) * 1000)
 
 
 def _java_to_go_relpath(java_rel: str) -> str:
@@ -438,7 +441,8 @@ def run_file_agent(
     system_prompt_override: str = "",
     max_steps: int = DEFAULT_AGENT_STEPS,
     config: RunnableConfig | None = None,
-) -> tuple[str, int, bool]:
+    llm_profile: str | None = None,
+) -> tuple[str, int, bool, dict[str, Any]]:
     """
     Single-file project worker used inside project migration.
     """
@@ -488,8 +492,11 @@ def run_file_agent(
     steps = int(os.environ.get("MIGRATION_AGENT_STEPS", str(default_steps)))
     if steps < 1:
         steps = DEFAULT_AGENT_STEPS
-    if _is_deepseek_provider():
-        total, build_ok = _run_deepseek_tool_loop(
+    profile = _profile_for_name(llm_profile)
+    if mock_enabled():
+        return "", 0, False, llm_metadata(profile)
+    if profile.provider == "deepseek":
+        total, build_ok, latency_ms = _run_deepseek_tool_loop(
             system=system,
             user=user_block,
             tools=tools,
@@ -501,9 +508,11 @@ def run_file_agent(
             max_steps=steps,
             max_no_progress_steps=5,
             config=config,
+            llm_profile=profile.profile,
         )
     else:
-        llm = _build_translator(streaming=False)
+        started = time.perf_counter()
+        llm = _build_translator(streaming=False, llm_profile=profile.profile)
         bound = cast(Any, llm).bind_tools(tools, parallel_tool_calls=True)
         total = 0
         build_ok = False
@@ -532,6 +541,7 @@ def run_file_agent(
                 messages.append(ToolMessage(content=out, tool_call_id=tid, name=name))
             if build_ok:
                 break
+        latency_ms = int((time.perf_counter() - started) * 1000)
 
     tpath = go_out / out_rel
     go_code = ""
@@ -539,7 +549,7 @@ def run_file_agent(
         go_code = tpath.read_text(encoding="utf-8", errors="replace")
     if go_code.strip() and "package " not in go_code:
         go_code = f"package {go_package}\n\n" + go_code
-    return go_code, total, build_ok
+    return go_code, total, build_ok, llm_metadata(profile, latency_ms=latency_ms, total_tokens=total)
 
 
 def run_module_agent(
@@ -554,7 +564,8 @@ def run_module_agent(
     system_prompt_override: str = "",
     max_steps: int = DEFAULT_AGENT_STEPS,
     config: RunnableConfig | None = None,
-) -> tuple[dict[str, str], int, bool, dict[str, Any]]:
+    llm_profile: str | None = None,
+) -> tuple[dict[str, str], int, bool, dict[str, Any], dict[str, Any]]:
     """
     Translate an entire module (ordered Java files) in one ReAct thread.
     """
@@ -618,8 +629,19 @@ def run_module_agent(
     steps = int(os.environ.get("MIGRATION_AGENT_STEPS", str(default_steps)))
     if steps < 1:
         steps = DEFAULT_AGENT_STEPS
-    if _is_deepseek_provider():
-        total, build_ok = _run_deepseek_tool_loop(
+    profile = _profile_for_name(llm_profile)
+    if mock_enabled():
+        artifacts = {
+            "written_files": [],
+            "detected_new_or_changed_files": [],
+            "effective_output_files": [],
+            "declared_count": 0,
+            "diff_count": 0,
+            "effective_count": 0,
+        }
+        return {}, 0, False, artifacts, llm_metadata(profile)
+    if profile.provider == "deepseek":
+        total, build_ok, latency_ms = _run_deepseek_tool_loop(
             system=system,
             user=user_block,
             tools=tools,
@@ -629,9 +651,11 @@ def run_module_agent(
             max_steps=steps,
             max_no_progress_steps=6,
             config=config,
+            llm_profile=profile.profile,
         )
     else:
-        llm = _build_translator(streaming=False)
+        started = time.perf_counter()
+        llm = _build_translator(streaming=False, llm_profile=profile.profile)
         bound = cast(Any, llm).bind_tools(tools, parallel_tool_calls=True)
         total = 0
         build_ok = False
@@ -660,6 +684,7 @@ def run_module_agent(
                 messages.append(ToolMessage(content=out, tool_call_id=tid, name=name))
             if build_ok:
                 break
+        latency_ms = int((time.perf_counter() - started) * 1000)
 
     declared_files = _extract_written_files_from_tool(by_name)
     declared_go_files = sorted(
@@ -699,7 +724,7 @@ def run_module_agent(
         "effective_count": len(effective_go_files),
     }
     module_ok = build_ok and not missing_go_files
-    return out_by_rel, total, module_ok, artifacts
+    return out_by_rel, total, module_ok, artifacts, llm_metadata(profile, latency_ms=latency_ms, total_tokens=total)
 
 
 def run_test_gen_module_agent(
@@ -715,7 +740,8 @@ def run_test_gen_module_agent(
     err_hint: str = "",
     max_steps: int = DEFAULT_AGENT_STEPS,
     config: RunnableConfig | None = None,
-) -> tuple[dict[str, str], int, bool, int, int, list[str], dict[str, Any]]:
+    llm_profile: str | None = None,
+) -> tuple[dict[str, str], int, bool, int, int, list[str], dict[str, Any], dict[str, Any]]:
     """
     Create matching *_test.go files from Java semantics only.
     """
@@ -804,8 +830,20 @@ def run_test_gen_module_agent(
     steps = int(os.environ.get("MIGRATION_AGENT_STEPS", str(default_steps)))
     if steps < 1:
         steps = DEFAULT_AGENT_STEPS
-    if _is_deepseek_provider():
-        total, test_ok = _run_deepseek_tool_loop(
+    profile = _profile_for_name(llm_profile)
+    if mock_enabled():
+        artifacts = {
+            "written_files": [],
+            "detected_new_or_changed_files": [],
+            "effective_output_files": [],
+            "expected_output_files": expected_test_targets,
+            "declared_count": 0,
+            "diff_count": 0,
+            "effective_count": 0,
+        }
+        return {}, 0, False, len(expected_test_targets), 0, [f"module {module_name}: mock LLM did not generate tests"], artifacts, llm_metadata(profile)
+    if profile.provider == "deepseek":
+        total, test_ok, latency_ms = _run_deepseek_tool_loop(
             system=system,
             user=user_block,
             tools=tools,
@@ -820,9 +858,11 @@ def run_test_gen_module_agent(
             max_no_progress_steps=4,
             enable_thinking=False,
             config=config,
+            llm_profile=profile.profile,
         )
     else:
-        llm = _build_translator(streaming=False)
+        started = time.perf_counter()
+        llm = _build_translator(streaming=False, llm_profile=profile.profile)
         bound = cast(Any, llm).bind_tools(tools, parallel_tool_calls=True)
         total = 0
         test_ok = False
@@ -856,6 +896,7 @@ def run_test_gen_module_agent(
                 messages.append(ToolMessage(content=out, tool_call_id=tid, name=name))
             if test_ok:
                 break
+        latency_ms = int((time.perf_counter() - started) * 1000)
 
     declared_files = _extract_written_files_from_tool(by_name)
     declared_test_files = sorted(
@@ -907,4 +948,4 @@ def run_test_gen_module_agent(
         "diff_count": len(diff_test_files),
         "effective_count": len(effective_test_files),
     }
-    return out_tests, total, final_ok, expected_count, generated_count, failures, artifacts
+    return out_tests, total, final_ok, expected_count, generated_count, failures, artifacts, llm_metadata(profile, latency_ms=latency_ms, total_tokens=total)

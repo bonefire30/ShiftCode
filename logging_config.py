@@ -18,7 +18,8 @@ import os
 import sys
 import ctypes
 from pathlib import Path
-from typing import Any, MutableMapping
+from typing import Any
+from security import sanitize_secret_text
 
 ROOT = Path(__file__).resolve().parent
 RUN_LOGS = ROOT / "run_logs"
@@ -83,7 +84,7 @@ class _JsonFormatter(logging.Formatter):
             "ts": self.formatTime(record, self.datefmt),
             "level": record.levelname,
             "logger": record.name,
-            "message": record.getMessage(),
+            "message": sanitize_secret_text(record.getMessage()),
         }
         n = getattr(record, "node", None)
         t = getattr(record, "tid", None)
@@ -92,7 +93,7 @@ class _JsonFormatter(logging.Formatter):
         if t is not None:
             payload["thread_id"] = t
         if record.exc_info:
-            payload["exception"] = self.formatException(record.exc_info)
+            payload["exception"] = sanitize_secret_text(self.formatException(record.exc_info))
         return json.dumps(payload, ensure_ascii=False) + "\n"
 
 
@@ -107,13 +108,13 @@ class _ColorConsoleFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         orig = super().format(record)
         if not _USE_ANSI:
-            return orig
+            return sanitize_secret_text(orig)
         c = _LEVEL_COLORS.get(record.levelname, "")
         if not c:
-            return orig
+            return sanitize_secret_text(orig)
         old = f"[{record.levelname}]"
         new = f"{_BOLD}{c}[{record.levelname}]{_RESET}"
-        return orig.replace(old, new, 1)
+        return sanitize_secret_text(orig.replace(old, new, 1))
 
 
 class _NodeLoggerAdapter(logging.LoggerAdapter[logging.Logger]):
@@ -234,5 +235,10 @@ def setup_logging(
         lg = logging.getLogger(name)
         lg.setLevel(level)
         lg.propagate = True
+
+    for name in ("openai", "openai._base_client", "httpcore", "httpx"):
+        lg = logging.getLogger(name)
+        lg.setLevel(logging.WARNING)
+        lg.propagate = False
 
     _setup_done = True

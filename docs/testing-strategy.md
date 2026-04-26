@@ -28,6 +28,38 @@ Each conversion test should define:
 - Unsupported features should produce understandable messages.
 - Tests that would trigger LLM API calls or long-running model/API operations must not be run automatically by agents; provide the command for the user to run instead.
 
+## Manual LLM Smoke Tests
+
+The tier5 payment polymorphism smoke test is a manual evaluation gate for the
+fixed LLM profiles. It must not run in routine unit tests or CI because it calls
+real provider APIs unless `JAVA2GO_LLM_MOCK=1` is set.
+
+The report's `model` field is the actual endpoint-accepted model identifier
+used in the API request. These identifiers may differ from initial candidate
+labels in planning documents. The currently verified identifiers are
+`MiniMax-M2.7`, `deepseek-v4-flash`, and `GPT-5.3 Codex`.
+
+Run it manually with:
+
+```powershell
+python scripts/run_tier5_three_profile_smoke.py
+```
+
+Acceptance for this smoke test:
+
+- The report includes `minimax`, `deepseek`, and `codex-proxy` results.
+- Each result has a non-empty `go_output_dir`.
+- Each result has `llmCallStatus` set to `success`.
+- Each result has `conversionStatus` set to `success`.
+- Each result has `last_build_ok`, `last_test_ok`, `test_gen_ok`, and `test_quality_ok` set to true.
+- Each result has `semantic_contract.ok` set to true for the fixture-specific payment contract.
+
+The first-version semantic check uses source-structure checks, build/test
+status, and generated-test quality. It does not append temporary semantic test
+files to model output directories. The smoke report is evidence for this fixture
+only. It does not prove full Java semantic equivalence or broad provider
+support.
+
 ## Failure Case Database
 
 Track important failed or partial conversions using this format.

@@ -40,3 +40,7 @@ User guidance:
 | Java generics | unsupported | Type parameter semantics need explicit Go mapping. | Review generated output before relying on it. |
 | Framework annotations | unsupported | Annotation behavior depends on the Java framework. | Treat framework behavior as manual migration work. |
 | Stream pipelines | unsupported | Streams require semantic rewriting. | Rewrite into loops or Go iterator-style code manually. |
+| LLM profile evaluation | partial | The `minimax`, `deepseek`, and `codex-proxy` profiles are evaluation candidates, not a general model gateway or guarantee of provider-wide support. | Treat profile results as comparative evidence for selected fixtures only. |
+| Provider model identifiers | partial | Provider and proxy endpoints may require model identifiers that differ from initial planning labels. The report `model` field records the actual endpoint-accepted identifier used in API requests. | Use the configured profile and smoke report model values when reproducing evaluations. |
+| Smoke semantic signal | partial | The tier5 smoke test checks a fixture-specific payment contract and build/test status. It does not prove complete Java semantic equivalence. | Review generated Go for production migrations and add fixture-specific semantic checks as coverage expands. |
+| Provider token usage | partial | Providers may omit token usage or expose only aggregate totals. Missing values are reported as null/unknown, not estimated. | Use token data only when present in the report. |

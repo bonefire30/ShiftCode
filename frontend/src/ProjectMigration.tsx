@@ -8,7 +8,14 @@ import { OutputPathNotice } from './components/migration/OutputPathNotice'
 import { TerminalLogPanel } from './components/migration/TerminalLogPanel'
 import { TestGenerationStatus } from './components/migration/TestGenerationStatus'
 import { WorkflowTimeline } from './components/migration/WorkflowTimeline'
-import type { CaseItem, FileState, HitlPayload, StepRow } from './components/migration/types'
+import type {
+  CaseItem,
+  FileState,
+  HitlPayload,
+  LlmEvaluationMetadata,
+  LlmEvaluationProfile,
+  StepRow,
+} from './components/migration/types'
 
 const API = ''
 
@@ -19,6 +26,7 @@ export function ProjectMigration() {
   const [analyzing, setAnalyzing] = useState(false)
   const [maxRepair, setMaxRepair] = useState(3)
   const [goModule, setGoModule] = useState('')
+  const [llmProfile, setLlmProfile] = useState<LlmEvaluationProfile>('deepseek')
   const [running, setRunning] = useState(false)
   const [activeNode, setActiveNode] = useState<string | null>(null)
   const [steps, setSteps] = useState<StepRow[]>([])
@@ -110,6 +118,7 @@ export function ProjectMigration() {
     const q = new URLSearchParams({
       project: projectPath,
       max_repair: String(maxRepair),
+      llm_profile: llmProfile,
     })
     if (goModule.trim()) {
       q.set('go_module', goModule.trim())
@@ -170,7 +179,7 @@ export function ProjectMigration() {
       setRunEndedAt(Date.now())
       stop()
     }
-  }, [appendLog, goModule, maxRepair, projectPath, running, stop])
+  }, [appendLog, goModule, llmProfile, maxRepair, projectPath, running, stop])
 
   const sendHitl = useCallback(
     (decision: string) => {
@@ -229,6 +238,7 @@ export function ProjectMigration() {
     typeof lastState?.last_test_ok === 'boolean'
       ? (lastState.last_test_ok as boolean)
       : null
+  const llmMetadata = extractLlmMetadata(lastState, llmProfile)
 
   return (
     <div className="space-y-4">
@@ -245,6 +255,8 @@ export function ProjectMigration() {
         setMaxRepair={setMaxRepair}
         goModule={goModule}
         setGoModule={setGoModule}
+        llmProfile={llmProfile}
+        setLlmProfile={setLlmProfile}
         running={running}
         analyzing={analyzing}
         onAnalyze={runAnalyze}
@@ -267,6 +279,8 @@ export function ProjectMigration() {
 
       <AnalysisSummary analyze={analyze} />
 
+      {lastState && <LlmEvaluationSummary metadata={llmMetadata} />}
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 min-h-[320px]">
         <WorkflowTimeline
           activeNode={activeNode}
@@ -284,6 +298,160 @@ export function ProjectMigration() {
       <OutputPathNotice goOutputDir={lastState?.go_output_dir} />
 
       <TerminalLogPanel terminal={terminal} />
+    </div>
+  )
+}
+
+function extractLlmMetadata(
+  state: Record<string, unknown> | null,
+  selectedProfile: LlmEvaluationProfile
+): LlmEvaluationMetadata {
+  const llm = asRecord(state?.llm_metadata) ?? asRecord(state?.llm) ?? asRecord(state?.model_metadata)
+  const usage = asRecord(llm?.usage) ?? asRecord(llm?.token_usage) ?? asRecord(state?.token_usage)
+  const error = asRecord(llm?.error) ?? asRecord(state?.llm_error)
+  const profile = readString(llm?.profile) ?? readString(state?.llm_profile) ?? selectedProfile
+
+  return {
+    profile,
+    provider: readString(llm?.provider) ?? readString(state?.llm_provider),
+    model: readString(llm?.model) ?? readString(state?.llm_model),
+    baseUrl: readString(llm?.baseUrl) ?? readString(llm?.base_url) ?? readString(state?.llm_base_url),
+    latencyMs:
+      readNumber(llm?.latencyMs) ?? readNumber(llm?.latency_ms) ?? readNumber(state?.llm_latency_ms),
+    promptTokens:
+      readNumber(usage?.promptTokens) ??
+      readNumber(usage?.prompt_tokens) ??
+      readNumber(usage?.input_tokens),
+    completionTokens:
+      readNumber(usage?.completionTokens) ??
+      readNumber(usage?.completion_tokens) ??
+      readNumber(usage?.output_tokens),
+    totalTokens:
+      readNumber(usage?.totalTokens) ??
+      readNumber(usage?.total_tokens) ??
+      readNumber(llm?.total_tokens) ??
+      readNumber(state?.total_tokens),
+    llmCallStatus:
+      readString(llm?.llmCallStatus) ??
+      readString(llm?.llm_call_status) ??
+      readString(state?.llm_call_status) ??
+      (error ? 'error' : 'unknown'),
+    conversionStatus:
+      readString(llm?.conversionStatus) ??
+      readString(llm?.conversion_status) ??
+      readString(state?.conversion_status),
+    errorMessage:
+      readString(error?.message) ?? readString(error?.detail) ?? readString(state?.llm_error_message),
+    retryable: readBoolean(error?.retryable) ?? readBoolean(llm?.retryable),
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null
+}
+
+function readString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null
+}
+
+function readNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function readBoolean(value: unknown): boolean | null {
+  return typeof value === 'boolean' ? value : null
+}
+
+function formatLatency(latencyMs: number | null | undefined) {
+  if (latencyMs === null || latencyMs === undefined) return 'unknown'
+  if (latencyMs >= 1000) return `${(latencyMs / 1000).toFixed(1)}s`
+  return `${Math.round(latencyMs)}ms`
+}
+
+function formatNumber(value: number | null | undefined) {
+  return value === null || value === undefined ? 'unknown' : value.toLocaleString()
+}
+
+function llmStatusClass(status: string | null | undefined) {
+  if (status === 'success') return 'border-emerald-800/70 bg-emerald-500/10 text-emerald-300'
+  if (status === 'warning') return 'border-amber-800/70 bg-amber-500/10 text-amber-200'
+  if (status === 'error') return 'border-red-800/70 bg-red-500/10 text-red-200'
+  return 'border-slate-700 bg-slate-800/70 text-slate-400'
+}
+
+function conversionStatusClass(status: string | null | undefined) {
+  if (status === 'success') return 'border-emerald-800/70 bg-emerald-500/10 text-emerald-300'
+  if (status === 'warning') return 'border-amber-800/70 bg-amber-500/10 text-amber-200'
+  if (status === 'partial') return 'border-sky-800/70 bg-sky-500/10 text-sky-200'
+  if (status === 'unsupported') return 'border-orange-800/70 bg-orange-500/10 text-orange-200'
+  if (status === 'error') return 'border-red-800/70 bg-red-500/10 text-red-200'
+  return 'border-slate-700 bg-slate-800/70 text-slate-400'
+}
+
+function LlmEvaluationSummary({ metadata }: { metadata: LlmEvaluationMetadata }) {
+  return (
+    <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-4 text-sm">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="font-medium text-slate-200">LLM evaluation metadata</h3>
+          <p className="mt-1 text-xs text-slate-500">
+            API 调用状态只说明模型请求是否成功；转换状态仍必须单独判断。
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2 text-[11px]">
+          <span className={`rounded-full border px-2 py-1 ${llmStatusClass(metadata.llmCallStatus)}`}>
+            LLM call {metadata.llmCallStatus || 'unknown'}
+          </span>
+          <span
+            className={`rounded-full border px-2 py-1 ${conversionStatusClass(
+              metadata.conversionStatus
+            )}`}
+          >
+            Conversion {metadata.conversionStatus || 'unknown'}
+          </span>
+        </div>
+      </div>
+
+      <div className="mt-4 grid grid-cols-2 gap-2 text-xs md:grid-cols-5">
+        <MetadataItem label="Profile" value={metadata.profile || 'unknown'} />
+        <MetadataItem label="Provider" value={metadata.provider || 'unknown'} />
+        <MetadataItem label="Model" value={metadata.model || 'unknown'} />
+        <MetadataItem label="Latency" value={formatLatency(metadata.latencyMs)} />
+        <MetadataItem label="Tokens" value={formatNumber(metadata.totalTokens)} />
+      </div>
+
+      <div className="mt-3 grid grid-cols-1 gap-2 text-xs md:grid-cols-3">
+        <MetadataItem label="Prompt tokens" value={formatNumber(metadata.promptTokens)} />
+        <MetadataItem label="Completion tokens" value={formatNumber(metadata.completionTokens)} />
+        <MetadataItem label="Base URL" value={metadata.baseUrl || 'configured by backend'} />
+      </div>
+
+      {metadata.errorMessage && (
+        <div className="mt-3 rounded border border-red-900/50 bg-red-950/30 p-3 text-xs text-red-200">
+          <p className="font-medium">LLM API call failed</p>
+          <p className="mt-1 text-red-200/90">{metadata.errorMessage}</p>
+          <p className="mt-2 text-red-200/70">
+            {metadata.retryable === null || metadata.retryable === undefined
+              ? '后端未说明是否可重试。请检查对应环境变量和 provider 配置。'
+              : metadata.retryable
+                ? '该错误可能可重试；检查网络、限流或临时 provider 故障后再运行。'
+                : '该错误通常不可通过重试解决；请先修正环境变量或 profile 配置。'}
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function MetadataItem({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0 rounded border border-slate-800 bg-slate-900/40 p-2">
+      <p className="text-slate-500">{label}</p>
+      <p className="mt-1 truncate font-medium text-slate-200" title={value}>
+        {value}
+      </p>
     </div>
   )
 }

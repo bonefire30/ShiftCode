@@ -50,6 +50,8 @@ from logging_config import (
     setup_logging,
 )
 from workflow import run_module_agent, run_test_gen_module_agent
+from llm_profiles import LLMError, get_profile, llm_metadata
+from security import sanitize_exception
 from test_quality_guard import (
     evaluate_test_quality,
     extract_prompt_contract_checklist,
@@ -62,10 +64,39 @@ INTERRUPT_OK = interrupt is not None
 COMMAND_OK = Command is not None
 
 
+def _llm_error_from_exception(exc: BaseException) -> LLMError:
+    return LLMError(
+        type=exc.__class__.__name__,
+        message=sanitize_exception(exc),
+        retryable=exc.__class__.__name__ in {"APITimeoutError", "APIConnectionError", "RateLimitError"},
+    )
+
+
+def _conversion_status_from_state(state: dict[str, Any]) -> str:
+    if str(state.get("fatal") or "").strip():
+        return "error"
+    if bool(state.get("last_build_ok")) and bool(state.get("last_test_ok")):
+        if bool(state.get("test_gen_ok")) and bool(state.get("test_quality_ok")):
+            return "success"
+    return "partial"
+
+
+def _llm_run_metadata_with_conversion(state: dict[str, Any]) -> dict[str, Any]:
+    meta = dict(state.get("llm_run_metadata") or {})
+    calls = list(meta.get("calls") or [])
+    call_status = "error" if any(c.get("llmCallStatus") == "error" for c in calls) else "success"
+    meta.setdefault("promptVersion", "project-migration-v1")
+    meta["llmCallStatus"] = call_status
+    meta["conversionStatus"] = _conversion_status_from_state(state)
+    meta["calls"] = calls
+    return meta
+
+
 class FileTranslationState(TypedDict, total=False):
     java_path: str
     go_code: str
     status: str
+    conversionStatus: str
     errors: list[str]
     attempts: int
     last_error_hint: str
@@ -95,6 +126,8 @@ class MultiProjectState(TypedDict, total=False):
     repair_round: int
     max_repair_rounds: int
     total_tokens: int
+    llm_profile: str
+    llm_run_metadata: dict[str, Any]
     migration_done: bool
     fatal: str
     test_gen_failures: list[str]
@@ -166,6 +199,11 @@ def architect_node(state: MultiProjectState) -> dict[str, Any]:
     if not raw:
         log.error("fatal: missing project_dir")
         return {"fatal": "missing project_dir", "migration_done": True}
+    try:
+        profile = get_profile(state.get("llm_profile"))
+    except ValueError as exc:
+        log.error("fatal: invalid llm_profile: %s", exc)
+        return {"fatal": str(exc), "migration_done": True}
     pr = (ROOT / raw).resolve()
     rres = ROOT.resolve()
     if not str(pr).startswith(str(rres)) or not pr.is_dir():
@@ -197,6 +235,7 @@ def architect_node(state: MultiProjectState) -> dict[str, Any]:
         p: {
             "java_path": p,
             "status": "pending",
+            "conversionStatus": "partial",
             "go_code": "",
             "errors": [],
             "attempts": 0,
@@ -238,6 +277,8 @@ def architect_node(state: MultiProjectState) -> dict[str, Any]:
         "test_gen_ok": False,
         "test_gen_warnings": [],
         "test_quality_ok": False,
+        "llm_profile": profile.profile,
+        "llm_run_metadata": llm_metadata(profile, conversion_status="partial"),
     }
 
 
@@ -291,7 +332,8 @@ def _translate_one_module(
     err_hints: dict[str, str],
     prev_states: dict[str, FileTranslationState],
     rag_lock: threading.Lock,
-) -> tuple[dict[str, FileTranslationState], int, dict[str, Any]]:
+    llm_profile: str | None,
+) -> tuple[dict[str, FileTranslationState], int, dict[str, Any], dict[str, Any]]:
     log = node_logger("translate_modules")
     label = f"mod{mod_idx}"
     java_sources: dict[str, str] = {}
@@ -332,7 +374,7 @@ def _translate_one_module(
     fstates: dict[str, FileTranslationState] = {}
     used_tok = 0
     try:
-        out_map, used_tok, success, artifacts = run_module_agent(
+        out_map, used_tok, success, artifacts, llm_meta = run_module_agent(
             module_dep_order=mod_files,
             java_sources=java_sources,
             go_output_dir=go_out,
@@ -341,6 +383,7 @@ def _translate_one_module(
             context_hint=context_hint,
             err_hint=err0,
             system_prompt_override=project_migration_prompt,
+            llm_profile=llm_profile,
         )
     except Exception as e:  # noqa: BLE001
         log.error("run_module_agent 失败 mod=%s", label, exc_info=True)
@@ -350,9 +393,11 @@ def _translate_one_module(
                 "java_path": jr,
                 "go_code": "",
                 "status": "failed",
-                "errors": [str(e)],
+                "conversionStatus": "error",
+            "errors": [sanitize_exception(e)],
                 "attempts": int(prev.get("attempts") or 0) + 1,
             }
+        profile = get_profile(llm_profile)
         return fstates, 0, {
             "written_files": [],
             "detected_new_or_changed_files": [],
@@ -360,13 +405,14 @@ def _translate_one_module(
             "declared_count": 0,
             "diff_count": 0,
             "effective_count": 0,
-        }
+        }, llm_metadata(profile, llm_call_status="error", conversion_status="error", error=_llm_error_from_exception(e))
     for jr in mod_files:
         prev = dict(prev_states.get(jr) or {})
         fs0: FileTranslationState = {
             "java_path": jr,
             "go_code": (out_map.get(jr) or "").strip(),
             "status": "done" if success else "partial",
+            "conversionStatus": "success" if success else "partial",
             "errors": [],
             "attempts": int(prev.get("attempts") or 0) + 1,
         }
@@ -384,7 +430,7 @@ def _translate_one_module(
         int(artifacts.get("diff_count") or 0),
         int(artifacts.get("effective_count") or 0),
     )
-    return fstates, used_tok, artifacts
+    return fstates, used_tok, artifacts, llm_meta
 
 
 def translate_modules_node(state: MultiProjectState) -> dict[str, Any]:
@@ -413,6 +459,9 @@ def translate_modules_node(state: MultiProjectState) -> dict[str, Any]:
     module_translate_artifacts: dict[str, dict[str, Any]] = dict(
         state.get("module_translate_artifacts") or {}
     )
+    llm_profile = state.get("llm_profile")
+    llm_run_metadata = dict(state.get("llm_run_metadata") or {})
+    llm_calls: list[dict[str, Any]] = list(llm_run_metadata.get("calls") or [])
     err_hints = {p: (fs.get("last_error_hint") or "") for p, fs in fstates0.items()}
 
     modules = state.get("modules") or []
@@ -440,20 +489,23 @@ def translate_modules_node(state: MultiProjectState) -> dict[str, Any]:
                     err_hints=err_hints,
                     prev_states=fstates0,
                     rag_lock=rag_lock,
+                    llm_profile=llm_profile,
                 ): midx
                 for midx in layer
             }
             for fut in as_completed(futs):
                 midx = futs[fut]
-                mpart, tadd, marts = fut.result()
+                mpart, tadd, marts, llm_meta = fut.result()
                 tok += tadd
                 fstates.update(mpart)
                 module_translate_artifacts[f"mod{midx}"] = marts
+                llm_calls.append({"stage": "translate_modules", "module": f"mod{midx}", **llm_meta})
     log.info("退出节点 total_tokens=%d", tok)
     return {
         "file_states": fstates,
         "total_tokens": tok,
         "module_translate_artifacts": module_translate_artifacts,
+        "llm_run_metadata": {**llm_run_metadata, "calls": llm_calls},
     }
 
 
@@ -482,7 +534,8 @@ def _test_gen_one_module(
     prompt_contract_checklist: list[str],
     err_hint: str,
     translate_artifacts: dict[str, Any],
-) -> tuple[dict[str, str], int, bool, int, int, list[str], list[str], dict[str, Any]]:
+    llm_profile: str | None,
+) -> tuple[dict[str, str], int, bool, int, int, list[str], list[str], dict[str, Any], dict[str, Any]]:
     log = node_logger("test_gen_modules")
     java_sources: dict[str, str] = {}
     for jr in mod_files:
@@ -514,7 +567,7 @@ def _test_gen_one_module(
     label = f"mod{midx}"
     try:
         expected_go_files = list(translate_artifacts.get("effective_output_files") or [])
-        out, used, ok, expected_count, generated_count, failures, test_artifacts = run_test_gen_module_agent(
+        out, used, ok, expected_count, generated_count, failures, test_artifacts, llm_meta = run_test_gen_module_agent(
             module_dep_order=mod_files,
             java_sources=java_sources,
             go_output_dir=go_out,
@@ -524,16 +577,18 @@ def _test_gen_one_module(
             expected_go_files=expected_go_files,
             module_name=label,
             err_hint=err_hint,
+            llm_profile=llm_profile,
         )
     except Exception as e:  # noqa: BLE001
         log.error("run_test_gen_module_agent 失败 %s", label, exc_info=True)
+        profile = get_profile(llm_profile)
         return (
             {},
             0,
             False,
             len(mod_files),
             0,
-            [f"module {label}: {e}"],
+            [f"module {label}: {sanitize_exception(e)}"],
             [],
             {
                 "written_files": [],
@@ -544,6 +599,7 @@ def _test_gen_one_module(
                 "diff_count": 0,
                 "effective_count": 0,
             },
+            llm_metadata(profile, llm_call_status="error", conversion_status="error", error=_llm_error_from_exception(e)),
         )
 
     go_sources: dict[str, str] = {}
@@ -572,6 +628,7 @@ def _test_gen_one_module(
         merged_failures,
         quality_warnings,
         test_artifacts,
+        llm_meta,
     )
 
 
@@ -613,7 +670,9 @@ def _global_repair_one_module(
     ragger: Any,
     prev_states: dict[str, FileTranslationState],
     rag_lock: threading.Lock,
-) -> tuple[dict[str, FileTranslationState], int, dict[str, Any]]:
+    llm_profile: str | None,
+) -> tuple[dict[str, FileTranslationState], int, dict[str, Any], dict[str, Any]]:
+    profile = get_profile(llm_profile)
     if not mod_files:
         return {}, 0, {
             "written_files": [],
@@ -622,7 +681,7 @@ def _global_repair_one_module(
             "declared_count": 0,
             "diff_count": 0,
             "effective_count": 0,
-        }
+        }, llm_metadata(profile)
     java_sources: dict[str, str] = {}
     for jr in mod_files:
         jpath = pr / jr.replace("/", os.sep)
@@ -659,7 +718,7 @@ def _global_repair_one_module(
     )
     fstates: dict[str, FileTranslationState] = {}
     try:
-        out_map, used_tok, success, artifacts = run_module_agent(
+        out_map, used_tok, success, artifacts, llm_meta = run_module_agent(
             module_dep_order=mod_files,
             java_sources=java_sources,
             go_output_dir=go_out,
@@ -668,6 +727,7 @@ def _global_repair_one_module(
             context_hint=context_hint,
             err_hint=err_hint,
             system_prompt_override=project_migration_prompt,
+            llm_profile=llm_profile,
         )
     except Exception as e:  # noqa: BLE001
         for jr in mod_files:
@@ -676,7 +736,8 @@ def _global_repair_one_module(
                 "java_path": jr,
                 "go_code": "",
                 "status": "failed",
-                "errors": [str(e)],
+                "conversionStatus": "error",
+                "errors": [sanitize_exception(e)],
                 "attempts": int(prev.get("attempts") or 0) + 1,
             }
         return fstates, 0, {
@@ -686,13 +747,14 @@ def _global_repair_one_module(
             "declared_count": 0,
             "diff_count": 0,
             "effective_count": 0,
-        }
+        }, llm_metadata(profile, llm_call_status="error", conversion_status="error", error=_llm_error_from_exception(e))
     for jr in mod_files:
         prev2 = dict(prev_states.get(jr) or {})
         fstates[jr] = {
             "java_path": jr,
             "go_code": (out_map.get(jr) or "").strip(),
             "status": "done" if success else "partial",
+            "conversionStatus": "success" if success else "partial",
             "errors": [],
             "attempts": int(prev2.get("attempts") or 0) + 1,
         }
@@ -701,7 +763,7 @@ def _global_repair_one_module(
             for jr, g in out_map.items():
                 if (g or "").strip():
                     ragger.add_file(jr, g)
-    return fstates, used_tok, artifacts
+    return fstates, used_tok, artifacts, llm_meta
 
 
 def global_repair_node(state: MultiProjectState) -> dict[str, Any]:
@@ -730,6 +792,9 @@ def global_repair_node(state: MultiProjectState) -> dict[str, Any]:
     module_translate_artifacts: dict[str, dict[str, Any]] = dict(
         state.get("module_translate_artifacts") or {}
     )
+    llm_profile = state.get("llm_profile")
+    llm_run_metadata = dict(state.get("llm_run_metadata") or {})
+    llm_calls: list[dict[str, Any]] = list(llm_run_metadata.get("calls") or [])
     tok = int(state.get("total_tokens") or 0)
     modules = state.get("modules") or []
     ragger = make_rag()
@@ -754,21 +819,24 @@ def global_repair_node(state: MultiProjectState) -> dict[str, Any]:
                 ragger,
                 fstates0,
                 rag_lock,
+                llm_profile,
             ): midx
             for midx, mod in enumerate(modules)
         }
         for fut in as_completed(futs):
             midx = futs[fut]
-            mpart, tadd, marts = fut.result()
+            mpart, tadd, marts, llm_meta = fut.result()
             tok += tadd
             fstates.update(mpart)
             module_translate_artifacts[f"mod{midx}"] = marts
+            llm_calls.append({"stage": "global_repair", "module": f"mod{midx}", **llm_meta})
     prev = state.get("last_build_log") or ""
     return {
         "file_states": fstates,
         "total_tokens": tok,
         "module_translate_artifacts": module_translate_artifacts,
         "last_build_log": prev + "\n[global_repair: module agent 重试一轮]",
+        "llm_run_metadata": {**llm_run_metadata, "calls": llm_calls},
     }
 
 
@@ -802,6 +870,9 @@ def _run_test_gen_stage(
     module_test_gen_artifacts: dict[str, dict[str, Any]] = dict(
         state.get("module_test_gen_artifacts") or {}
     )
+    llm_profile = state.get("llm_profile")
+    llm_run_metadata = dict(state.get("llm_run_metadata") or {})
+    llm_calls: list[dict[str, Any]] = list(llm_run_metadata.get("calls") or [])
     previous_tgen: dict[str, str] = dict(state.get("test_gen_states") or {})
     previous_failures = list(state.get("test_gen_failures") or [])
     modules_to_run: list[tuple[int, list[str]]] = list(enumerate(modules))
@@ -836,6 +907,7 @@ def _run_test_gen_stage(
                 prompt_contract_checklist,
                 err_hint,
                 module_translate_artifacts.get(f"mod{midx}") or {},
+                llm_profile,
             ): midx
             for midx, mod in modules_to_run
         }
@@ -850,6 +922,7 @@ def _run_test_gen_stage(
                 module_failures,
                 module_warnings,
                 module_artifacts,
+                llm_meta,
             ) = fut.result()
             tok += tadd
             tgen.update(out)
@@ -859,6 +932,7 @@ def _run_test_gen_stage(
             diff_count += int(module_artifacts.get("diff_count") or 0)
             effective_count += int(module_artifacts.get("effective_count") or 0)
             module_test_gen_artifacts[f"mod{midx}"] = module_artifacts
+            llm_calls.append({"stage": node_name, "module": f"mod{midx}", **llm_meta})
             if not ok:
                 failures.extend(module_failures)
             warnings.extend(module_warnings)
@@ -907,6 +981,7 @@ def _run_test_gen_stage(
         warnings=warnings,
     )
     out["module_test_gen_artifacts"] = module_test_gen_artifacts
+    out["llm_run_metadata"] = {**llm_run_metadata, "calls": llm_calls}
     return out
 
 
@@ -950,13 +1025,15 @@ def reviewer_node(state: MultiProjectState) -> dict[str, Any]:
     }
     if not go_out.is_dir():
         log.error("reviewer missing go_output_dir")
-        return {
+        out = {
             "last_build_ok": False,
             "last_test_ok": False,
             "last_build_log": "no output dir",
             "migration_done": True,
             **test_state,
         }
+        out["llm_run_metadata"] = _llm_run_metadata_with_conversion({**state, **out, "fatal": state.get("fatal") or "no output dir"})
+        return out
     ok, blog = go_build_status(go_out)
     rep = int(state.get("repair_round") or 0)
     fstates: dict[str, FileTranslationState] = dict(state.get("file_states") or {})
@@ -968,7 +1045,7 @@ def reviewer_node(state: MultiProjectState) -> dict[str, Any]:
             fs = dict(fstates.get(p) or {"java_path": p})
             fs["last_error_hint"] = hint
             fstates[p] = fs
-        return {
+        out = {
             "last_build_ok": False,
             "last_test_ok": False,
             "last_build_log": blog,
@@ -976,6 +1053,8 @@ def reviewer_node(state: MultiProjectState) -> dict[str, Any]:
             "repair_round": rep + 1,
             **test_state,
         }
+        out["llm_run_metadata"] = _llm_run_metadata_with_conversion({**state, **out})
+        return out
 
     test_gen_ok = bool(test_state["test_gen_ok"])
     test_quality_ok = bool(test_state["test_quality_ok"])
@@ -1028,7 +1107,7 @@ def reviewer_node(state: MultiProjectState) -> dict[str, Any]:
             fs = dict(fstates.get(p) or {"java_path": p})
             fs["last_error_hint"] = hint
             fstates[p] = fs
-        return {
+        out = {
             "last_build_ok": True,
             "last_test_ok": False,
             "last_build_log": combined,
@@ -1037,6 +1116,8 @@ def reviewer_node(state: MultiProjectState) -> dict[str, Any]:
             "repair_round": rep + 1,
             **test_state,
         }
+        out["llm_run_metadata"] = _llm_run_metadata_with_conversion({**state, **out})
+        return out
 
     test_ok, test_log = go_test_status(go_out)
     if not test_ok:
@@ -1052,7 +1133,7 @@ def reviewer_node(state: MultiProjectState) -> dict[str, Any]:
             fs = dict(fstates.get(p) or {"java_path": p})
             fs["last_error_hint"] = hint
             fstates[p] = fs
-        return {
+        out = {
             "last_build_ok": True,
             "last_test_ok": False,
             "last_build_log": combined,
@@ -1060,6 +1141,8 @@ def reviewer_node(state: MultiProjectState) -> dict[str, Any]:
             "repair_round": rep + 1,
             **test_state,
         }
+        out["llm_run_metadata"] = _llm_run_metadata_with_conversion({**state, **out})
+        return out
 
     log.info(
         "go build + go test succeeded repair_round reset expected_tests=%d generated_tests=%d failures=%d",
@@ -1067,13 +1150,15 @@ def reviewer_node(state: MultiProjectState) -> dict[str, Any]:
         generated_count,
         len(test_failures),
     )
-    return {
+    out = {
         "last_build_ok": True,
         "last_test_ok": True,
         "last_build_log": (blog or "OK") + "\n--- go test ---\n" + (test_log or ""),
         "repair_round": 0,
         **test_state,
     }
+    out["llm_run_metadata"] = _llm_run_metadata_with_conversion({**state, **out})
+    return out
 
 
 def route_after_reviewer(
@@ -1171,6 +1256,7 @@ def run_project_migrate(
     *,
     max_repair_rounds: int = 3,
     go_module: str | None = None,
+    llm_profile: str | None = None,
 ) -> Any:
     """Run graph; same thread_id for MemorySaver; resume with resume_project_migrate()."""
     token = set_workflow_thread_id(thread_id)
@@ -1186,12 +1272,15 @@ def run_project_migrate(
         }
         if go_module:
             init["go_module"] = go_module
+        if llm_profile:
+            init["llm_profile"] = llm_profile
         _wf.info(
-            "工作流启动 thread_id=%s project=%s max_repair=%s go_module=%s",
+            "工作流启动 thread_id=%s project=%s max_repair=%s go_module=%s llm_profile=%s",
             thread_id,
             project_dir,
             max_repair_rounds,
             go_module,
+            llm_profile,
         )
         for step in g.stream(init, cfg):
             if not step:
@@ -1208,6 +1297,7 @@ def stream_project_workflow(
     *,
     max_repair_rounds: int = 3,
     go_module: str | None = None,
+    llm_profile: str | None = None,
 ) -> Any:
     tid = f"pm-{uuid.uuid4().hex}"
     cfg: dict[str, Any] = {"configurable": {"thread_id": tid}}
@@ -1219,6 +1309,7 @@ def stream_project_workflow(
             cfg,
             max_repair_rounds=max_repair_rounds,
             go_module=go_module,
+            llm_profile=llm_profile,
         ):
             yield node_id, out
     finally:
