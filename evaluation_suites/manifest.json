@@ -1,0 +1,132 @@
+{
+  "version": 1,
+  "defaultProfilePolicy": "mock-only",
+  "suites": {
+    "smoke": {
+      "purpose": "Fast profile/API/report chain verification. Not a quality conclusion.",
+      "defaultProfiles": ["mock"],
+      "allowRealProfiles": ["minimax", "deepseek", "codex-proxy"],
+      "fixtures": [
+        {
+          "id": "smoke.simple_method",
+          "path": "benchmark_dataset/smoke_minimal/01_simple_method",
+          "purpose": "Verify the minimal Java class/method conversion path and report metadata.",
+          "javaPattern": "single class with one string-returning instance method",
+          "expectedStatus": "success",
+          "mustNotReportSuccess": false
+        },
+        {
+          "id": "smoke.payment_polymorphism",
+          "path": "benchmark_dataset/tier5_polymorphism/01_payment_processor",
+          "purpose": "Existing first smoke evidence for profile comparison and fixture-specific semantic signal.",
+          "javaPattern": "abstract class with concrete subclasses and dispatch",
+          "expectedStatus": "success",
+          "mustNotReportSuccess": false
+        }
+      ]
+    },
+    "core": {
+      "purpose": "Small daily quality set for representative conversion behavior.",
+      "defaultProfiles": ["mock"],
+      "allowRealProfiles": ["minimax", "codex-proxy"],
+      "fixtures": [
+        {
+          "id": "core.basic_lru_cache",
+          "path": "benchmark_dataset/tier1_basic/01_lru_cache",
+          "purpose": "Basic class, methods, maps, and mutation behavior.",
+          "javaPattern": "basic class with collection-backed cache methods",
+          "expectedStatus": "success",
+          "mustNotReportSuccess": false
+        },
+        {
+          "id": "core.payment_polymorphism",
+          "path": "benchmark_dataset/tier5_polymorphism/01_payment_processor",
+          "purpose": "Interface-like polymorphism and concrete struct methods.",
+          "javaPattern": "abstract class inheritance and dynamic dispatch",
+          "expectedStatus": "success",
+          "mustNotReportSuccess": false
+        },
+        {
+          "id": "core.config_parser",
+          "path": "benchmark_dataset/tier8_io_json/01_config_parser",
+          "purpose": "Parsing/data transformation with error-return style output.",
+          "javaPattern": "configuration parsing with maps and validation",
+          "expectedStatus": "warning",
+          "mustNotReportSuccess": false
+        },
+        {
+          "id": "core.retry_executor_exceptions",
+          "path": "benchmark_dataset/tier7_exceptions/01_retry_executor",
+          "purpose": "Checked-exception-like flow should surface caveats.",
+          "javaPattern": "retry logic with Java exception flow",
+          "expectedStatus": "partial",
+          "mustNotReportSuccess": true
+        },
+        {
+          "id": "core.stream_data_analyzer",
+          "path": "benchmark_dataset/tier6_streams/01_data_analyzer",
+          "purpose": "Stream pipeline support should not be overclaimed.",
+          "javaPattern": "Java stream pipeline",
+          "expectedStatus": "unsupported",
+          "mustNotReportSuccess": true
+        }
+      ]
+    },
+    "features": {
+      "purpose": "Known-limitations coverage so unsupported or partial Java features are not hidden by LLM success.",
+      "defaultProfiles": ["mock"],
+      "allowRealProfiles": ["minimax", "codex-proxy"],
+      "fixtures": [
+        {
+          "id": "features.checked_exceptions",
+          "path": "benchmark_dataset/tier7_exceptions/01_retry_executor",
+          "purpose": "Checked exception semantics require explicit caveats.",
+          "javaPattern": "checked exception and retry flow",
+          "expectedStatus": "partial",
+          "mustNotReportSuccess": true
+        },
+        {
+          "id": "features.generics",
+          "path": "benchmark_dataset/tier4_generics/01_result_wrapper",
+          "purpose": "Java generic type parameters are currently unsupported.",
+          "javaPattern": "generic result wrapper",
+          "expectedStatus": "unsupported",
+          "mustNotReportSuccess": true
+        },
+        {
+          "id": "features.streams",
+          "path": "benchmark_dataset/tier6_streams/01_data_analyzer",
+          "purpose": "Stream pipelines require semantic rewriting and must not be hidden as success.",
+          "javaPattern": "stream map/filter/reduce style pipeline",
+          "expectedStatus": "unsupported",
+          "mustNotReportSuccess": true
+        },
+        {
+          "id": "features.framework_annotations",
+          "path": "benchmark_dataset/tier9_annotations/01_framework_annotation",
+          "purpose": "Framework annotations are metadata and currently unsupported/partial.",
+          "javaPattern": "Spring-style class annotation",
+          "expectedStatus": "unsupported",
+          "mustNotReportSuccess": true
+        }
+      ]
+    },
+    "wave1": {
+      "purpose": "Stage-gate full-project benchmark for release/model decisions only. Not for daily debugging.",
+      "defaultProfiles": [],
+      "allowRealProfiles": ["minimax", "deepseek", "codex-proxy"],
+      "requiresExplicitRealLlm": true,
+      "fixtures": [
+        {
+          "id": "wave1.full_project_suite",
+          "path": "benchmark_projects/wave1",
+          "purpose": "Full wave1 multi-file project benchmark suite for explicit decision points.",
+          "javaPattern": "multi-project benchmark set",
+          "expectedStatus": "partial",
+          "mustNotReportSuccess": false,
+          "notes": "Wave1 aggregate may contain mixed fixture outcomes; this placeholder status keeps the fixture metadata within the shared status model."
+        }
+      ]
+    }
+  }
+}

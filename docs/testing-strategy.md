@@ -60,6 +60,59 @@ files to model output directories. The smoke report is evidence for this fixture
 only. It does not prove full Java semantic equivalence or broad provider
 support.
 
+## Layered LLM Evaluation Suites
+
+LLM evaluation is now layered so daily development does not depend on expensive
+or slow full-project runs.
+
+Suites are defined in `evaluation_suites/manifest.json`:
+
+- `smoke`: 1-2 small fixtures for profile/API/report wiring. This validates the
+  chain, not model quality.
+- `core`: 3-5 representative fixtures for daily quality signal. Real LLM runs
+  should usually compare `minimax` and `codex-proxy`; `deepseek` is not a default
+  high-frequency profile.
+- `features`: known-limitation fixtures for checked exceptions, generics,
+  framework annotations, and stream pipelines. These fixtures must not hide
+  unsupported or partial behavior as `success`.
+- `wave1`: stage-gate full-project evaluation for release or model-decision
+  points only. It is not a default debugging suite.
+
+Default runs are mock-only:
+
+```powershell
+python scripts/run_layered_evaluation_suite.py --suite smoke
+python scripts/run_layered_evaluation_suite.py --suite core
+python scripts/run_layered_evaluation_suite.py --suite features
+```
+
+Real provider calls require an explicit profile and confirmation:
+
+```powershell
+python scripts/run_layered_evaluation_suite.py --suite smoke --profile codex-proxy --confirm-real-llm
+python scripts/run_layered_evaluation_suite.py --suite core --profile minimax --confirm-real-llm
+```
+
+DeepSeek is disabled for non-smoke real runs unless explicitly enabled:
+
+```powershell
+$env:ALLOW_DEEPSEEK_EVALUATION=1
+python scripts/run_layered_evaluation_suite.py --suite core --profile deepseek --confirm-real-llm
+```
+
+Every fixture entry must include `id`, `purpose`, `javaPattern`,
+`expectedStatus`, and `mustNotReportSuccess`. Reports must include profile,
+provider, model, latency/token usage when available, `llmCallStatus`, and
+`conversionStatus`.
+
+Mock reports validate manifest/report/status wiring only. They do not generate
+Go output and do not require `go_output_dir`. Real LLM reports must include a
+non-empty `go_output_dir` for generated outputs.
+
+For real LLM layered runs, a fixture passes only when its observed
+`conversionStatus` matches its manifest `expectedStatus`. Fixtures marked
+`mustNotReportSuccess` cannot use `expectedStatus: success`.
+
 ## Failure Case Database
 
 Track important failed or partial conversions using this format.

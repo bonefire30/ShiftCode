@@ -1,0 +1,6 @@
+Migrate this Java class to idiomatic Go.
+
+Requirements:
+- Output package `simplemethod`.
+- Preserve the greet behavior: Greet("Ada") returns "Hello, Ada".
+- Keep the implementation minimal; this fixture verifies the LLM profile/API/report chain, not broad conversion quality.

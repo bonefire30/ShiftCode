@@ -1,0 +1,7 @@
+Migrate this Java class to idiomatic Go.
+
+Requirements:
+- Output package `annotations`.
+- Preserve channel(): Channel() returns "email".
+- Treat the Spring @Service annotation as framework metadata that is not directly converted to Go runtime behavior.
+- Report annotation handling as unsupported or partial; do not claim full support for framework annotations.

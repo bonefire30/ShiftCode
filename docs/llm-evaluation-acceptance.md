@@ -83,3 +83,20 @@ The fixture-specific checks include:
 - Smoke pass does not prove complete Java semantic equivalence.
 - Provider token usage may be missing; missing values are reported as
   null/unknown, not estimated.
+
+## Next Gate: Layered Suite Acceptance
+
+Before using wave1 as a model-quality decision input, quality review should
+accept the layered suite manifest in `evaluation_suites/manifest.json`.
+
+The intended order is:
+
+1. Verify profile/API/report wiring with `smoke`.
+2. Use `core` for daily small-sample model quality checks.
+3. Use `features` to ensure known unsupported or partial Java features are not
+   hidden as `success`.
+4. Use `wave1` only at release or model-decision points.
+
+Default layered suite runs are mock-only. Real provider calls require
+`--confirm-real-llm`, and DeepSeek is disabled for non-smoke real runs unless
+`ALLOW_DEEPSEEK_EVALUATION=1` is set.
