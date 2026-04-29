@@ -238,7 +238,12 @@ export function ProjectMigration() {
     typeof lastState?.last_test_ok === 'boolean'
       ? (lastState.last_test_ok as boolean)
       : null
-  const llmMetadata = extractLlmMetadata(lastState, llmProfile)
+  const llmMetadata = extractLlmMetadata(lastState, llmProfile, {
+    build: lastBuildOk,
+    tests: lastTestOk,
+    testGeneration: testGenOk,
+    testQuality: testQualityOk,
+  })
 
   return (
     <div className="space-y-4">
@@ -304,12 +309,23 @@ export function ProjectMigration() {
 
 function extractLlmMetadata(
   state: Record<string, unknown> | null,
-  selectedProfile: LlmEvaluationProfile
+  selectedProfile: LlmEvaluationProfile,
+  engineeringChecks: {
+    build: boolean | null
+    tests: boolean | null
+    testGeneration: boolean | null
+    testQuality: boolean | null
+  }
 ): LlmEvaluationMetadata {
   const llm = asRecord(state?.llm_metadata) ?? asRecord(state?.llm) ?? asRecord(state?.model_metadata)
   const usage = asRecord(llm?.usage) ?? asRecord(llm?.token_usage) ?? asRecord(state?.token_usage)
   const error = asRecord(llm?.error) ?? asRecord(state?.llm_error)
   const profile = readString(llm?.profile) ?? readString(state?.llm_profile) ?? selectedProfile
+  const engineeringStatus =
+    asRecord(state?.engineeringStatus) ??
+    asRecord(state?.engineering_status) ??
+    asRecord(llm?.engineeringStatus) ??
+    asRecord(llm?.engineering_status)
 
   return {
     profile,
@@ -340,6 +356,40 @@ function extractLlmMetadata(
       readString(llm?.conversionStatus) ??
       readString(llm?.conversion_status) ??
       readString(state?.conversion_status),
+    statusReasons:
+      readStringArray(llm?.statusReasons) ??
+      readStringArray(llm?.status_reasons) ??
+      readStringArray(state?.statusReasons) ??
+      readStringArray(state?.status_reasons) ??
+      [],
+    gateFailures:
+      readStringArray(llm?.gateFailures) ??
+      readStringArray(llm?.gate_failures) ??
+      readStringArray(state?.gateFailures) ??
+      readStringArray(state?.gate_failures) ??
+      [],
+    statusCounts:
+      readNumberRecord(state?.statusCounts) ??
+      readNumberRecord(state?.status_counts) ??
+      readNumberRecord(llm?.statusCounts) ??
+      readNumberRecord(llm?.status_counts),
+    engineeringStatus: {
+      build:
+        readString(engineeringStatus?.build) ??
+        statusFromBoolean(engineeringChecks.build),
+      tests:
+        readString(engineeringStatus?.tests) ??
+        readString(engineeringStatus?.test) ??
+        statusFromBoolean(engineeringChecks.tests),
+      testGeneration:
+        readString(engineeringStatus?.testGeneration) ??
+        readString(engineeringStatus?.test_generation) ??
+        statusFromBoolean(engineeringChecks.testGeneration),
+      testQuality:
+        readString(engineeringStatus?.testQuality) ??
+        readString(engineeringStatus?.test_quality) ??
+        statusFromBoolean(engineeringChecks.testQuality),
+    },
     errorMessage:
       readString(error?.message) ?? readString(error?.detail) ?? readString(state?.llm_error_message),
     retryable: readBoolean(error?.retryable) ?? readBoolean(llm?.retryable),
@@ -360,8 +410,30 @@ function readNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
+function readStringArray(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null
+  const items = value
+    .map((item) => (typeof item === 'string' ? item.trim() : ''))
+    .filter(Boolean)
+  return items.length > 0 ? items : []
+}
+
+function readNumberRecord(value: unknown): Record<string, number> | undefined {
+  const record = asRecord(value)
+  if (!record) return undefined
+  const entries = Object.entries(record).filter(
+    (entry): entry is [string, number] => typeof entry[1] === 'number' && Number.isFinite(entry[1])
+  )
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined
+}
+
 function readBoolean(value: unknown): boolean | null {
   return typeof value === 'boolean' ? value : null
+}
+
+function statusFromBoolean(value: boolean | null) {
+  if (value === null) return null
+  return value ? 'success' : 'error'
 }
 
 function formatLatency(latencyMs: number | null | undefined) {
@@ -390,6 +462,19 @@ function conversionStatusClass(status: string | null | undefined) {
   return 'border-slate-700 bg-slate-800/70 text-slate-400'
 }
 
+function reviewGuidance(status: string | null | undefined) {
+  if (status === 'warning') return 'Review caveats before relying on the generated Go.'
+  if (status === 'partial') return 'Manual follow-up is required before treating this migration as complete.'
+  if (status === 'unsupported') return 'Unsupported Java features were detected; plan manual migration for those areas.'
+  if (status === 'error') return 'Conversion failed unexpectedly; inspect the error and rerun after fixing it.'
+  if (status === 'success') return 'Supported-scope conversion passed with no reported caveats.'
+  return 'Waiting for backend conversion status metadata.'
+}
+
+function hasNeedsReview(status: string | null | undefined) {
+  return status === 'warning' || status === 'partial' || status === 'unsupported' || status === 'error'
+}
+
 function LlmEvaluationSummary({ metadata }: { metadata: LlmEvaluationMetadata }) {
   return (
     <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-4 text-sm">
@@ -397,7 +482,7 @@ function LlmEvaluationSummary({ metadata }: { metadata: LlmEvaluationMetadata })
         <div>
           <h3 className="font-medium text-slate-200">LLM evaluation metadata</h3>
           <p className="mt-1 text-xs text-slate-500">
-            API 调用状态只说明模型请求是否成功；转换状态仍必须单独判断。
+            API 调用状态、工程验证和转换状态是三个不同信号；build/test 通过不等于安全转换成功。
           </p>
         </div>
         <div className="flex flex-wrap gap-2 text-[11px]">
@@ -422,11 +507,67 @@ function LlmEvaluationSummary({ metadata }: { metadata: LlmEvaluationMetadata })
         <MetadataItem label="Tokens" value={formatNumber(metadata.totalTokens)} />
       </div>
 
+      <div className="mt-3 grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
+        <MetadataItem label="Build validation" value={metadata.engineeringStatus?.build || 'unknown'} />
+        <MetadataItem label="Test validation" value={metadata.engineeringStatus?.tests || 'unknown'} />
+        <MetadataItem
+          label="Test generation"
+          value={metadata.engineeringStatus?.testGeneration || 'unknown'}
+        />
+        <MetadataItem label="Test quality" value={metadata.engineeringStatus?.testQuality || 'unknown'} />
+      </div>
+
       <div className="mt-3 grid grid-cols-1 gap-2 text-xs md:grid-cols-3">
         <MetadataItem label="Prompt tokens" value={formatNumber(metadata.promptTokens)} />
         <MetadataItem label="Completion tokens" value={formatNumber(metadata.completionTokens)} />
         <MetadataItem label="Base URL" value={metadata.baseUrl || 'configured by backend'} />
       </div>
+
+      {metadata.statusCounts && (
+        <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
+          {(['success', 'warning', 'partial', 'unsupported', 'error'] as const).map((status) => (
+            <span
+              key={status}
+              className={`rounded-full border px-2 py-1 ${conversionStatusClass(status)}`}
+            >
+              {status} {metadata.statusCounts?.[status] ?? 0}
+            </span>
+          ))}
+        </div>
+      )}
+
+      <div
+        className={`mt-3 rounded border p-3 text-xs ${
+          hasNeedsReview(metadata.conversionStatus)
+            ? 'border-amber-900/50 bg-amber-950/20 text-amber-100'
+            : 'border-slate-800 bg-slate-900/30 text-slate-300'
+        }`}
+      >
+        <p className="font-medium">Conversion decision</p>
+        <p className="mt-1 text-slate-300">{reviewGuidance(metadata.conversionStatus)}</p>
+      </div>
+
+      {metadata.statusReasons && metadata.statusReasons.length > 0 && (
+        <div className="mt-3 rounded border border-slate-800 bg-slate-900/30 p-3 text-xs">
+          <p className="font-medium text-slate-200">Status reasons</p>
+          <ul className="mt-2 list-disc space-y-1 pl-4 text-slate-300">
+            {metadata.statusReasons.map((reason, index) => (
+              <li key={`${index}-${reason}`}>{reason}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {metadata.gateFailures && metadata.gateFailures.length > 0 && (
+        <div className="mt-3 rounded border border-red-900/50 bg-red-950/30 p-3 text-xs text-red-200">
+          <p className="font-medium">Gate failures</p>
+          <ul className="mt-2 list-disc space-y-1 pl-4">
+            {metadata.gateFailures.map((failure, index) => (
+              <li key={`${index}-${failure}`}>{failure}</li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {metadata.errorMessage && (
         <div className="mt-3 rounded border border-red-900/50 bg-red-950/30 p-3 text-xs text-red-200">

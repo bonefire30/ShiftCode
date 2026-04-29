@@ -86,6 +86,7 @@ class TestLayeredEvaluationSuite(unittest.TestCase):
         ):
             report = run_suite(suite="smoke", profile="codex-proxy", confirm_real_llm=True, manifest=manifest)
         self.assertEqual(report["failed"], 1)
+        self.assertIn("expected conversionStatus warning, got success", report["results"][0]["gateFailures"])
 
 
 if __name__ == "__main__":

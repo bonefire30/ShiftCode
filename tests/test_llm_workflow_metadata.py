@@ -87,7 +87,7 @@ class TestLLMWorkflowMetadata(unittest.TestCase):
         error_state = {**state, "llm_run_metadata": {"calls": [{"llmCallStatus": "error"}]}}
         error_meta = _llm_run_metadata_with_conversion(error_state)
         self.assertEqual(error_meta["llmCallStatus"], "error")
-        self.assertEqual(error_meta["conversionStatus"], "partial")
+        self.assertEqual(error_meta["conversionStatus"], "error")
 
 
 if __name__ == "__main__":

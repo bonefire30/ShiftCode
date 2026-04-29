@@ -28,6 +28,11 @@ except Exception:  # noqa: BLE001
     interrupt = None  # type: ignore[assignment, misc]
 
 from codebase_rag import make_rag
+from conversion_status import (
+    classify_java_sources,
+    final_conversion_status,
+    status_reasons,
+)
 from dependency_graph import (
     build_dependency_graph,
     cluster_into_modules,
@@ -73,12 +78,31 @@ def _llm_error_from_exception(exc: BaseException) -> LLMError:
 
 
 def _conversion_status_from_state(state: dict[str, Any]) -> str:
-    if str(state.get("fatal") or "").strip():
-        return "error"
-    if bool(state.get("last_build_ok")) and bool(state.get("last_test_ok")):
-        if bool(state.get("test_gen_ok")) and bool(state.get("test_quality_ok")):
-            return "success"
-    return "partial"
+    engineering_status = {
+        "build": bool(state.get("last_build_ok")),
+        "tests": bool(state.get("last_test_ok")),
+        "testGeneration": bool(state.get("test_gen_ok")),
+        "testQuality": bool(state.get("test_quality_ok")),
+    }
+    contributions = classify_java_sources(_java_source_texts_from_state(state))
+    calls = list((state.get("llm_run_metadata") or {}).get("calls") or []) if isinstance(state.get("llm_run_metadata"), dict) else []
+    llm_status = "error" if any(c.get("llmCallStatus") == "error" for c in calls) else "success"
+    return final_conversion_status(
+        llm_call_status=llm_status,
+        engineering_status=engineering_status,
+        contributions=contributions,
+        fatal=str(state.get("fatal") or "").strip() or None,
+    )
+
+
+def _java_source_texts_from_state(state: dict[str, Any]) -> dict[str, str]:
+    java_infos = state.get("java_infos") or {}
+    out: dict[str, str] = {}
+    if isinstance(java_infos, dict):
+        for path, info in java_infos.items():
+            if isinstance(info, dict):
+                out[str(path)] = str(info.get("source_text") or "")
+    return out
 
 
 def _llm_run_metadata_with_conversion(state: dict[str, Any]) -> dict[str, Any]:
@@ -88,6 +112,16 @@ def _llm_run_metadata_with_conversion(state: dict[str, Any]) -> dict[str, Any]:
     meta.setdefault("promptVersion", "project-migration-v1")
     meta["llmCallStatus"] = call_status
     meta["conversionStatus"] = _conversion_status_from_state(state)
+    contributions = classify_java_sources(_java_source_texts_from_state(state))
+    reasons = status_reasons(contributions)
+    if reasons:
+        meta["statusReasons"] = reasons
+    meta["engineeringStatus"] = {
+        "build": "success" if bool(state.get("last_build_ok")) else "partial",
+        "tests": "success" if bool(state.get("last_test_ok")) else "partial",
+        "testGeneration": "success" if bool(state.get("test_gen_ok")) else "partial",
+        "testQuality": "success" if bool(state.get("test_quality_ok")) else "partial",
+    }
     meta["calls"] = calls
     return meta
 

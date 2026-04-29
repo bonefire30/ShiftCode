@@ -51,8 +51,8 @@
           "path": "benchmark_dataset/tier8_io_json/01_config_parser",
           "purpose": "Parsing/data transformation with error-return style output.",
           "javaPattern": "configuration parsing with maps and validation",
-          "expectedStatus": "warning",
-          "mustNotReportSuccess": false
+          "expectedStatus": "partial",
+          "mustNotReportSuccess": true
         },
         {
           "id": "core.retry_executor_exceptions",

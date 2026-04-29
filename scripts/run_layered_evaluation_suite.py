@@ -173,6 +173,11 @@ def _real_fixture_result(suite: str, fixture: dict[str, Any], profile_name: str,
     must_not_success = bool(fixture.get("mustNotReportSuccess"))
     expected_status = _conversion_status_from_fixture(fixture)
     status_ok = not error and llm_call_status == "success" and conversion_status == expected_status
+    gate_failures: list[str] = []
+    if conversion_status != expected_status:
+        gate_failures.append(f"expected conversionStatus {expected_status}, got {conversion_status}")
+    if must_not_success and conversion_status == "success":
+        gate_failures.append("mustNotReportSuccess=true but observed conversionStatus success")
     if must_not_success and conversion_status == "success":
         status_ok = False
 
@@ -194,6 +199,7 @@ def _real_fixture_result(suite: str, fixture: dict[str, Any], profile_name: str,
         "go_output_dir": _rel(str(final_state.get("go_output_dir") or "")) if final_state.get("go_output_dir") else "",
         "llmCallStatus": llm_call_status,
         "conversionStatus": conversion_status,
+        "gateFailures": gate_failures,
         "last_build_ok": bool(final_state.get("last_build_ok", False)),
         "last_test_ok": bool(final_state.get("last_test_ok", False)),
         "test_gen_ok": bool(final_state.get("test_gen_ok", False)),
@@ -285,6 +291,8 @@ def main() -> int:
             f"{result['fixture_id']}: {result['status']} profile={result['profile']} "
             f"llm={result['llmCallStatus']} conversion={result['conversionStatus']}"
         )
+        if result.get("gateFailures"):
+            print("  gateFailures: " + "; ".join(str(x) for x in result["gateFailures"]))
     print(f"Saved report to {_rel(output)}")
     return 0 if report["failed"] == 0 else 1
 

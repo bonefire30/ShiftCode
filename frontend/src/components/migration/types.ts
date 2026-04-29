@@ -15,6 +15,15 @@ export type LlmEvaluationMetadata = {
   totalTokens?: number | null
   llmCallStatus?: LlmCallStatus | string | null
   conversionStatus?: string | null
+  statusReasons?: string[]
+  gateFailures?: string[]
+  statusCounts?: Record<string, number>
+  engineeringStatus?: {
+    build?: string | null
+    tests?: string | null
+    testGeneration?: string | null
+    testQuality?: string | null
+  }
   errorMessage?: string | null
   retryable?: boolean | null
 }
