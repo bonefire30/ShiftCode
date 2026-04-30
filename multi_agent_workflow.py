@@ -232,6 +232,63 @@ def _test_generation_reasons(state: dict[str, Any]) -> list[str]:
     return explanations
 
 
+def _test_issue_categories(state: dict[str, Any]) -> list[dict[str, str]]:
+    issues: list[dict[str, str]] = []
+    failures = [str(f) for f in (state.get("test_gen_failures") or [])]
+    if not bool(state.get("test_gen_ok", False)):
+        if any("missing generated tests" in f.lower() for f in failures):
+            issues.append(
+                {
+                    "category": "missing_test_harness",
+                    "message": "Generated test files are missing or incomplete for one or more modules.",
+                }
+            )
+        elif any(f.startswith("over_specified_tests:") for f in failures):
+            issues.append(
+                {
+                    "category": "ambiguous_semantic_contract",
+                    "message": "Generated tests assert behavior beyond the explicit Java or migration-prompt contract.",
+                }
+            )
+        elif any(f.startswith("missing_required_assertions:") for f in failures):
+            issues.append(
+                {
+                    "category": "generated_test_behavior_mismatch",
+                    "message": "Generated tests do not cover required behavior from the Java source or migration prompt.",
+                }
+            )
+        elif failures:
+            issues.append(
+                {
+                    "category": "details_unavailable",
+                    "message": "Generated tests are partial or failed; inspect test_gen_failures and run logs for module-level detail.",
+                }
+            )
+        else:
+            issues.append(
+                {
+                    "category": "details_unavailable",
+                    "message": "Generated tests are partial or failed; details are unavailable, inspect run logs for more context.",
+                }
+            )
+    if not bool(state.get("last_test_ok", True)):
+        if any("go test FAILED" in str(state.get("last_build_log") or "") for _ in [0]):
+            issues.append(
+                {
+                    "category": "generated_test_compile_failure",
+                    "message": "Go test execution failed after generation; inspect last_build_log for failing assertions or compile output.",
+                }
+            )
+        else:
+            issues.append(
+                {
+                    "category": "details_unavailable",
+                    "message": "Go tests did not pass; inspect last_build_log or generated tests for root cause.",
+                }
+            )
+    return issues
+
+
 def _recommended_next_actions(state: dict[str, Any], reasons: list[str]) -> list[str]:
     actions: list[str] = []
     joined = " ".join(reasons).lower()
@@ -247,6 +304,12 @@ def _recommended_next_actions(state: dict[str, Any], reasons: list[str]) -> list
         actions.append("Inspect modules with generated test failures before trusting project-level behavior.")
     if not bool(state.get("last_test_ok", True)):
         actions.append("Fix failing Go tests and rerun engineering validation before treating the project output as stable.")
+    if "missing_test_harness" in joined:
+        actions.append("Add or repair missing generated test files and verify module-level test harness assumptions.")
+    if "generated_test_behavior_mismatch" in joined:
+        actions.append("Compare generated tests against Java contracts and tighten the generated assertions to match required behavior.")
+    if "ambiguous_semantic_contract" in joined:
+        actions.append("Review ambiguous semantic contracts and reduce over-specified generated assertions before trusting the test signal.")
     if not actions and str(state.get("llm_run_metadata", {}).get("conversionStatus") or "") in {"warning", "partial", "unsupported"}:
         actions.append("Treat project output as a migration draft until partial, warning, or unsupported items are resolved.")
     return actions
@@ -276,12 +339,19 @@ def _llm_run_metadata_with_conversion(state: dict[str, Any]) -> dict[str, Any]:
     meta["summaryCompleteness"] = summary_completeness
     test_failure_reasons = _test_failure_reasons(state)
     test_generation_reasons = _test_generation_reasons(state)
+    issue_categories = _test_issue_categories(state)
     if test_failure_reasons:
         meta["testFailureExplanations"] = test_failure_reasons
     if test_generation_reasons:
         meta["testGenerationReasons"] = test_generation_reasons
+    if issue_categories:
+        meta["testIssueCategories"] = issue_categories
     next_actions = _recommended_next_actions(
-        state, reasons + test_failure_reasons + test_generation_reasons
+        state,
+        reasons
+        + test_failure_reasons
+        + test_generation_reasons
+        + [issue["category"] + " " + issue["message"] for issue in issue_categories],
     )
     if next_actions:
         meta["recommendedNextActions"] = next_actions

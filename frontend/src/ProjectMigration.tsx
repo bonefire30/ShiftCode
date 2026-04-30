@@ -504,10 +504,24 @@ function readConversionItems(value: unknown): ConversionItem[] | undefined {
       id: readString(record.id),
       path: readString(record.path),
       status: readString(record.status),
+      semanticStatus: readString(record.semanticStatus) ?? readString(record.semantic_status),
+      classifierStatus: readString(record.classifierStatus) ?? readString(record.classifier_status),
       reasons:
         readStringArray(record.reasons) ??
         readStringArray(record.statusReasons) ??
         readStringArray(record.status_reasons) ??
+        [],
+      testIssueReasons:
+        readStringArray(record.testIssueReasons) ??
+        readStringArray(record.test_issue_reasons) ??
+        readStringArray(record.testFailureReasons) ??
+        readStringArray(record.test_failure_reasons) ??
+        [],
+      testGenerationIssueReasons:
+        readStringArray(record.testGenerationIssueReasons) ??
+        readStringArray(record.test_generation_issue_reasons) ??
+        readStringArray(record.testGenerationReasons) ??
+        readStringArray(record.test_generation_reasons) ??
         [],
       engineeringStatus:
         readEngineeringStatus(record.engineeringStatus) ??
@@ -571,6 +585,70 @@ function deriveRecommendedNextActions(
   return Array.from(actions)
 }
 
+function classifyTestIssue(reason: string) {
+  if (/generated[_ -]?test.*compile|compile failure/i.test(reason)) {
+    return {
+      label: 'generated_test_compile_failure',
+      inspect: 'Inspect generated test files first; fix compile errors before judging converted code behavior.',
+    }
+  }
+  if (/behavior mismatch|assertion|expected .* got|semantic contract/i.test(reason)) {
+    return {
+      label: 'generated_test_behavior_mismatch',
+      inspect: 'Compare the generated test expectation with the intended Java behavior before changing conversion logic.',
+    }
+  }
+  if (/harness|setup|fixture|environment/i.test(reason)) {
+    return {
+      label: 'missing_test_harness',
+      inspect: 'Check missing test setup, fixtures, or environment assumptions before treating this as a conversion defect.',
+    }
+  }
+  if (/unsupported/i.test(reason)) {
+    return {
+      label: 'unsupported_feature_blocks_test',
+      inspect: 'Inspect unsupported feature reports first; test failures may be downstream of unsupported conversion gaps.',
+    }
+  }
+  if (/ambiguous|unclear contract|unknown expected behavior/i.test(reason)) {
+    return {
+      label: 'ambiguous_semantic_contract',
+      inspect: 'Clarify the expected Java semantic contract before deciding whether to change generated Go or tests.',
+    }
+  }
+  if (/timeout|provider|rate limit|network|llm/i.test(reason)) {
+    return {
+      label: 'test_generation_timeout_or_provider_issue',
+      inspect: 'Check provider/runtime stability and retry conditions before assuming a conversion-rule problem.',
+    }
+  }
+  return {
+    label: 'details_unavailable',
+    inspect: 'Inspect workflow logs and generated tests for more context; the backend did not provide a narrower cause.',
+  }
+}
+
+function buildInspectNextSteps(metadata: LlmEvaluationMetadata): string[] {
+  const actions = new Set<string>()
+
+  metadata.testFailureReasons?.forEach((reason) => {
+    actions.add(classifyTestIssue(reason).inspect)
+  })
+  metadata.testGenerationReasons?.forEach((reason) => {
+    actions.add(classifyTestIssue(reason).inspect)
+  })
+  metadata.conversionItems?.forEach((item) => {
+    item.testIssueReasons?.forEach((reason) => {
+      actions.add(classifyTestIssue(reason).inspect)
+    })
+    item.testGenerationIssueReasons?.forEach((reason) => {
+      actions.add(classifyTestIssue(reason).inspect)
+    })
+  })
+
+  return Array.from(actions)
+}
+
 function formatLatency(latencyMs: number | null | undefined) {
   if (latencyMs === null || latencyMs === undefined) return 'unknown'
   if (latencyMs >= 1000) return `${(latencyMs / 1000).toFixed(1)}s`
@@ -615,6 +693,36 @@ function summaryLabel(summaryCompleteness: string | null | undefined) {
   if (summaryCompleteness === 'incomplete') return 'incomplete'
   if (summaryCompleteness === 'complete') return 'complete'
   return null
+}
+
+function IssueReasonList({
+  title,
+  reasons,
+}: {
+  title: string
+  reasons: string[]
+}) {
+  return (
+    <div className="rounded border border-slate-800 bg-slate-900/30 p-3 text-xs">
+      <p className="font-medium text-slate-200">{title}</p>
+      <ul className="mt-2 space-y-2 text-slate-300">
+        {reasons.map((reason, index) => {
+          const issue = classifyTestIssue(reason)
+          return (
+            <li key={`${index}-${reason}`} className="rounded border border-slate-800 bg-slate-950/40 p-2">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <span className="text-slate-200">{reason}</span>
+                <span className="rounded-full border border-slate-700 px-2 py-0.5 text-[10px] text-slate-400">
+                  {issue.label}
+                </span>
+              </div>
+              <p className="mt-2 text-slate-500">Inspect next: {issue.inspect}</p>
+            </li>
+          )
+        })}
+      </ul>
+    </div>
+  )
 }
 
 function LlmEvaluationSummary({ metadata }: { metadata: LlmEvaluationMetadata }) {
@@ -727,27 +835,30 @@ function LlmEvaluationSummary({ metadata }: { metadata: LlmEvaluationMetadata })
       (metadata.testGenerationReasons && metadata.testGenerationReasons.length > 0) ? (
         <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
           {metadata.testFailureReasons && metadata.testFailureReasons.length > 0 && (
-            <div className="rounded border border-slate-800 bg-slate-900/30 p-3 text-xs">
-              <p className="font-medium text-slate-200">Why tests are not fully passing</p>
-              <ul className="mt-2 list-disc space-y-1 pl-4 text-slate-300">
-                {metadata.testFailureReasons.map((reason, index) => (
-                  <li key={`${index}-${reason}`}>{reason}</li>
-                ))}
-              </ul>
-            </div>
+            <IssueReasonList
+              title="Why tests are not fully passing"
+              reasons={metadata.testFailureReasons}
+            />
           )}
           {metadata.testGenerationReasons && metadata.testGenerationReasons.length > 0 && (
-            <div className="rounded border border-slate-800 bg-slate-900/30 p-3 text-xs">
-              <p className="font-medium text-slate-200">Why test generation is partial</p>
-              <ul className="mt-2 list-disc space-y-1 pl-4 text-slate-300">
-                {metadata.testGenerationReasons.map((reason, index) => (
-                  <li key={`${index}-${reason}`}>{reason}</li>
-                ))}
-              </ul>
-            </div>
+            <IssueReasonList
+              title="Why test generation is partial"
+              reasons={metadata.testGenerationReasons}
+            />
           )}
         </div>
       ) : null}
+
+      {buildInspectNextSteps(metadata).length > 0 && (
+        <div className="mt-3 rounded border border-sky-900/50 bg-sky-950/20 p-3 text-xs text-sky-100">
+          <p className="font-medium">What to inspect next</p>
+          <ul className="mt-2 list-disc space-y-1 pl-4 text-sky-50/90">
+            {buildInspectNextSteps(metadata).map((step, index) => (
+              <li key={`${index}-${step}`}>{step}</li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {metadata.recommendedNextActions && metadata.recommendedNextActions.length > 0 && (
         <div className="mt-3 rounded border border-amber-900/50 bg-amber-950/20 p-3 text-xs text-amber-100">
@@ -786,6 +897,34 @@ function LlmEvaluationSummary({ metadata }: { metadata: LlmEvaluationMetadata })
                     ))}
                   </ul>
                 )}
+                {(item.semanticStatus || item.classifierStatus) && (
+                  <div className="mt-2 flex flex-wrap gap-2 text-[10px]">
+                    {item.semanticStatus && (
+                      <span className="rounded-full border border-slate-700 px-2 py-0.5 text-slate-300">
+                        semantic {item.semanticStatus}
+                      </span>
+                    )}
+                    {item.classifierStatus && (
+                      <span className="rounded-full border border-slate-700 px-2 py-0.5 text-slate-300">
+                        classifier {item.classifierStatus}
+                      </span>
+                    )}
+                  </div>
+                )}
+                {(item.testIssueReasons && item.testIssueReasons.length > 0) ||
+                (item.testGenerationIssueReasons && item.testGenerationIssueReasons.length > 0) ? (
+                  <div className="mt-3 grid grid-cols-1 gap-2 lg:grid-cols-2">
+                    {item.testIssueReasons && item.testIssueReasons.length > 0 && (
+                      <IssueReasonList title="Test issues" reasons={item.testIssueReasons} />
+                    )}
+                    {item.testGenerationIssueReasons && item.testGenerationIssueReasons.length > 0 && (
+                      <IssueReasonList
+                        title="Generated test issues"
+                        reasons={item.testGenerationIssueReasons}
+                      />
+                    )}
+                  </div>
+                ) : null}
                 {item.engineeringStatus && (
                   <div className="mt-2 flex flex-wrap gap-2 text-[10px]">
                     <span className="rounded-full border border-slate-700 px-2 py-0.5 text-slate-300">

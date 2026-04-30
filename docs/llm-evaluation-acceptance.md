@@ -101,9 +101,9 @@ Default layered suite runs are mock-only. Real provider calls require
 `--confirm-real-llm`, and DeepSeek is disabled for non-smoke real runs unless
 `ALLOW_DEEPSEEK_EVALUATION=1` is set.
 
-## Accepted Project-Level Explainability Evidence
+## Accepted Post-Wave1 Explainability Stage
 
-The accepted post-wave1 report is:
+The accepted follow-up wave1 report is:
 
 ```text
 run_logs/layered_eval_wave1_codex_proxy_after_project_summary_v2.json
@@ -115,23 +115,41 @@ Accepted outcome:
 - `conversionStatus: partial`
 - `expectedStatus: partial`
 - `gateFailures: []`
-- report includes `projectStatusSummary`
-- report includes `summaryCompleteness: complete`
-- report includes `conversionItems`
-- report includes `testFailureExplanations`
-- report includes `testGenerationReasons`
-- report includes `recommendedNextActions`
+- `projectStatusSummary` is present and consistent with project-level status.
+- `summaryCompleteness: complete`.
+- `conversionItems` identify module-level contributors to `warning` and `partial`.
+- `testFailureExplanations` and `testGenerationReasons` are present.
+- `recommendedNextActions` are actionable and status-driven.
 
 Why this matters:
 
-- The report now explains project-level `partial` without requiring raw-log spelunking.
-- Project-level summary counts are consistent with module/file-level contributors.
+- Reviewers can explain why wave1 is `partial` without reading raw logs line by line.
+- Module-level items no longer all appear as `success` when the project is `partial`.
 - Engineering validation remains separate from conversion support status.
-- The report identifies modules that are `warning` or `partial`, instead of showing every module as `success`.
+- The project output now tells developers what to inspect next instead of only saying `partial`.
 
 Product interpretation:
 
 ```text
-JAVA2GO can now explain why a project remains partial, what converted safely,
-what still needs review, and which modules should be inspected first.
+JAVA2GO now turns project-level partial results into clearer migration actions
+by explaining which modules need review, why they need review, and what the
+developer should do next.
+```
+
+## Accepted Feature-Coverage Roadmap P0
+
+The accepted P0 scope from `feature-coverage-roadmap-from-wave1.md` focused on
+test and test-generation partial explainability and recoverability.
+
+Accepted evidence:
+
+- Reports now include structured test/test-generation issue explanations.
+- Reports distinguish converted-code support status from generated-test issues.
+- Project-level partial results now include actionable next-step guidance.
+- Wave1 partial results are more actionable without requiring additional model comparison runs.
+
+Allowed release wording for this stage:
+
+```text
+JAVA2GO now turns project-level partial results into clearer migration actions by explaining test and generated-test issues separately from conversion support status.
 ```

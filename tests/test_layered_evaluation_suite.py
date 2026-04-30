@@ -101,6 +101,7 @@ class TestLayeredEvaluationSuite(unittest.TestCase):
                     "conversionItems": [{"id": "mod0", "status": "partial", "reasons": ["x"], "engineeringStatus": {"build": "success", "tests": "partial", "testGeneration": "partial", "testQuality": "success"}}],
                     "testFailureExplanations": ["tests are partial"],
                     "testGenerationReasons": ["generated tests are partial"],
+                    "testIssueCategories": [{"category": "generated_test_compile_failure", "message": "compile failed"}],
                     "recommendedNextActions": ["inspect failing tests"],
                 },
                 "last_build_ok": True,
@@ -123,6 +124,7 @@ class TestLayeredEvaluationSuite(unittest.TestCase):
         self.assertIn("conversionItems", result)
         self.assertIn("testFailureExplanations", result)
         self.assertIn("testGenerationReasons", result)
+        self.assertIn("testIssueCategories", result)
         self.assertIn("recommendedNextActions", result)
 
 

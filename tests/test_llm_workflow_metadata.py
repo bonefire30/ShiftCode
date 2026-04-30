@@ -143,8 +143,34 @@ class TestLLMWorkflowMetadata(unittest.TestCase):
         self.assertTrue(meta["testFailureExplanations"])
         self.assertIn("testGenerationReasons", meta)
         self.assertTrue(meta["testGenerationReasons"])
+        self.assertIn("testIssueCategories", meta)
+        self.assertTrue(meta["testIssueCategories"])
         self.assertIn("recommendedNextActions", meta)
         self.assertTrue(meta["recommendedNextActions"])
+
+    def test_structured_test_issue_categories_are_present(self) -> None:
+        from multi_agent_workflow import _llm_run_metadata_with_conversion
+
+        state = {
+            "java_infos": {"A.java": {"source_text": "class A {}"}},
+            "modules": [["A.java"]],
+            "file_states": {"A.java": {"conversionStatus": "partial"}},
+            "last_build_ok": True,
+            "last_test_ok": False,
+            "test_gen_ok": False,
+            "test_quality_ok": True,
+            "test_gen_failures": [
+                "module mod0: missing generated tests",
+                "missing_required_assertions: contract mismatch",
+            ],
+            "last_build_log": "--- go test FAILED ---\ncompile failed",
+            "llm_run_metadata": {"calls": [{"llmCallStatus": "success"}]},
+        }
+        meta = _llm_run_metadata_with_conversion(state)
+        categories = [item["category"] for item in meta["testIssueCategories"]]
+        self.assertIn("missing_test_harness", categories)
+        self.assertIn("generated_test_compile_failure", categories)
+        self.assertIn("recommendedNextActions", meta)
 
     def test_summary_completeness_is_incomplete_when_items_do_not_explain_aggregate(self) -> None:
         from multi_agent_workflow import _project_status_summary_from_state

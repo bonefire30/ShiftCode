@@ -210,6 +210,7 @@ def _real_fixture_result(suite: str, fixture: dict[str, Any], profile_name: str,
         "conversionItems": llm_meta.get("conversionItems"),
         "testFailureExplanations": llm_meta.get("testFailureExplanations"),
         "testGenerationReasons": llm_meta.get("testGenerationReasons"),
+        "testIssueCategories": llm_meta.get("testIssueCategories"),
         "recommendedNextActions": llm_meta.get("recommendedNextActions"),
     }
 

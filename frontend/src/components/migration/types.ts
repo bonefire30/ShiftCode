@@ -38,7 +38,11 @@ export type ConversionItem = {
   id?: string | null
   path?: string | null
   status?: string | null
+  semanticStatus?: string | null
+  classifierStatus?: string | null
   reasons?: string[]
+  testIssueReasons?: string[]
+  testGenerationIssueReasons?: string[]
   engineeringStatus?: {
     build?: string | null
     tests?: string | null
