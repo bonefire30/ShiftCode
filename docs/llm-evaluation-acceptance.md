@@ -100,3 +100,38 @@ The intended order is:
 Default layered suite runs are mock-only. Real provider calls require
 `--confirm-real-llm`, and DeepSeek is disabled for non-smoke real runs unless
 `ALLOW_DEEPSEEK_EVALUATION=1` is set.
+
+## Accepted Project-Level Explainability Evidence
+
+The accepted post-wave1 report is:
+
+```text
+run_logs/layered_eval_wave1_codex_proxy_after_project_summary_v2.json
+```
+
+Accepted outcome:
+
+- `llmCallStatus: success`
+- `conversionStatus: partial`
+- `expectedStatus: partial`
+- `gateFailures: []`
+- report includes `projectStatusSummary`
+- report includes `summaryCompleteness: complete`
+- report includes `conversionItems`
+- report includes `testFailureExplanations`
+- report includes `testGenerationReasons`
+- report includes `recommendedNextActions`
+
+Why this matters:
+
+- The report now explains project-level `partial` without requiring raw-log spelunking.
+- Project-level summary counts are consistent with module/file-level contributors.
+- Engineering validation remains separate from conversion support status.
+- The report identifies modules that are `warning` or `partial`, instead of showing every module as `success`.
+
+Product interpretation:
+
+```text
+JAVA2GO can now explain why a project remains partial, what converted safely,
+what still needs review, and which modules should be inspected first.
+```

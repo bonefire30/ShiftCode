@@ -205,6 +205,12 @@ def _real_fixture_result(suite: str, fixture: dict[str, Any], profile_name: str,
         "test_gen_ok": bool(final_state.get("test_gen_ok", False)),
         "test_quality_ok": bool(final_state.get("test_quality_ok", False)),
         "llm_run_metadata": llm_meta,
+        "projectStatusSummary": llm_meta.get("projectStatusSummary"),
+        "summaryCompleteness": llm_meta.get("summaryCompleteness"),
+        "conversionItems": llm_meta.get("conversionItems"),
+        "testFailureExplanations": llm_meta.get("testFailureExplanations"),
+        "testGenerationReasons": llm_meta.get("testGenerationReasons"),
+        "recommendedNextActions": llm_meta.get("recommendedNextActions"),
     }
 
 

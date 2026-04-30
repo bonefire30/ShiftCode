@@ -29,8 +29,10 @@ except Exception:  # noqa: BLE001
 
 from codebase_rag import make_rag
 from conversion_status import (
+    classifier_status,
     classify_java_sources,
     final_conversion_status,
+    merge_statuses,
     status_reasons,
 )
 from dependency_graph import (
@@ -87,12 +89,21 @@ def _conversion_status_from_state(state: dict[str, Any]) -> str:
     contributions = classify_java_sources(_java_source_texts_from_state(state))
     calls = list((state.get("llm_run_metadata") or {}).get("calls") or []) if isinstance(state.get("llm_run_metadata"), dict) else []
     llm_status = "error" if any(c.get("llmCallStatus") == "error" for c in calls) else "success"
-    return final_conversion_status(
+    aggregate_status = final_conversion_status(
         llm_call_status=llm_status,
         engineering_status=engineering_status,
         contributions=contributions,
         fatal=str(state.get("fatal") or "").strip() or None,
     )
+    file_states = state.get("file_states") or {}
+    child_statuses: list[str] = []
+    if isinstance(file_states, dict):
+        for file_state in file_states.values():
+            if isinstance(file_state, dict):
+                status = str(file_state.get("conversionStatus") or "").strip()
+                if status:
+                    child_statuses.append(status)
+    return merge_statuses(aggregate_status, *child_statuses)
 
 
 def _java_source_texts_from_state(state: dict[str, Any]) -> dict[str, str]:
@@ -103,6 +114,142 @@ def _java_source_texts_from_state(state: dict[str, Any]) -> dict[str, str]:
             if isinstance(info, dict):
                 out[str(path)] = str(info.get("source_text") or "")
     return out
+
+
+def _status_summary_template() -> dict[str, int]:
+    return {"success": 0, "warning": 0, "partial": 0, "unsupported": 0, "error": 0}
+
+
+def _module_status_reasons(state: dict[str, Any], module_files: list[str]) -> list[str]:
+    java_sources = _java_source_texts_from_state(state)
+    subset = {path: java_sources.get(path, "") for path in module_files}
+    return status_reasons(classify_java_sources(subset))
+
+
+def _module_classifier_status(state: dict[str, Any], module_files: list[str]) -> str:
+    java_sources = _java_source_texts_from_state(state)
+    subset = {path: java_sources.get(path, "") for path in module_files}
+    return classifier_status(classify_java_sources(subset))
+
+
+def _engineering_status_dict(*, build_ok: bool, test_ok: bool, test_gen_ok: bool, test_quality_ok: bool) -> dict[str, str]:
+    return {
+        "build": "success" if build_ok else "partial",
+        "tests": "success" if test_ok else "partial",
+        "testGeneration": "success" if test_gen_ok else "partial",
+        "testQuality": "success" if test_quality_ok else "partial",
+    }
+
+
+def _engineering_partial_status(engineering_status: dict[str, str]) -> str:
+    vals = [str(engineering_status.get(k) or "partial") for k in ("build", "tests", "testGeneration", "testQuality")]
+    return "success" if all(v == "success" for v in vals) else "partial"
+
+
+def _build_conversion_items(state: dict[str, Any]) -> list[dict[str, Any]]:
+    modules = list(state.get("modules") or [])
+    if not modules:
+        return []
+    last_build_ok = bool(state.get("last_build_ok"))
+    last_test_ok = bool(state.get("last_test_ok"))
+    test_gen_ok = bool(state.get("test_gen_ok"))
+    test_quality_ok = bool(state.get("test_quality_ok"))
+    engineering_status = _engineering_status_dict(
+        build_ok=last_build_ok,
+        test_ok=last_test_ok,
+        test_gen_ok=test_gen_ok,
+        test_quality_ok=test_quality_ok,
+    )
+    items: list[dict[str, Any]] = []
+    for idx, module_files in enumerate(modules):
+        file_statuses = [
+            str((state.get("file_states") or {}).get(path, {}).get("conversionStatus") or "partial")
+            for path in module_files
+        ]
+        semantic_status = merge_statuses(*file_statuses) if file_statuses else "partial"
+        classifier_contribution = _module_classifier_status(state, module_files)
+        reasons = _module_status_reasons(state, module_files)
+        module_status = merge_statuses(
+            semantic_status,
+            classifier_contribution,
+            _engineering_partial_status(engineering_status),
+        )
+        items.append(
+            {
+                "id": f"mod{idx}",
+                "path": ", ".join(module_files),
+                "status": module_status,
+                "semanticStatus": semantic_status,
+                "classifierStatus": classifier_contribution,
+                "reasons": reasons,
+                "engineeringStatus": engineering_status,
+            }
+        )
+    return items
+
+
+def _project_status_summary_from_items(items: list[dict[str, Any]]) -> dict[str, int]:
+    summary = _status_summary_template()
+    if not items:
+        return summary
+    for item in items:
+        status = str(item.get("status") or "partial")
+        if status in summary:
+            summary[status] += 1
+    return summary
+
+
+def _project_status_summary_from_state(
+    state: dict[str, Any], items: list[dict[str, Any]]
+) -> tuple[dict[str, int], str]:
+    aggregate = _conversion_status_from_state(state)
+    if items:
+        summary = _project_status_summary_from_items(items)
+        completeness = "complete" if summary.get(aggregate, 0) > 0 else "incomplete"
+        return summary, completeness
+
+    summary = _status_summary_template()
+    if aggregate in summary:
+        summary[aggregate] += 1
+    return summary, "aggregate-only"
+
+
+def _test_failure_reasons(state: dict[str, Any]) -> list[str]:
+    explanations: list[str] = []
+    if not bool(state.get("last_test_ok", True)):
+        explanations.append("Go tests did not pass; inspect last_build_log or generated test files for failing assertions and API mismatches.")
+    return explanations
+
+
+def _test_generation_reasons(state: dict[str, Any]) -> list[str]:
+    explanations: list[str] = []
+    if not bool(state.get("test_gen_ok", False)):
+        failures = list(state.get("test_gen_failures") or [])
+        if failures:
+            explanations.append("Generated tests are partial or failed; inspect test_gen_failures for specific missing assertions or over-specified tests.")
+        else:
+            explanations.append("Generated tests are partial or failed; detailed reasons are unavailable, inspect run logs for more context.")
+    return explanations
+
+
+def _recommended_next_actions(state: dict[str, Any], reasons: list[str]) -> list[str]:
+    actions: list[str] = []
+    joined = " ".join(reasons).lower()
+    if "parser/config" in joined or "parser" in joined:
+        actions.append("Review parser/config modules for default-value, JSON mapping, and error-path semantics.")
+    if "exception" in joined:
+        actions.append("Review modules with Java exception flow and decide the intended Go error-return design.")
+    if "stream pipeline" in joined:
+        actions.append("Rewrite stream-based logic manually or add explicit conversion-rule support before trusting generated behavior.")
+    if "annotation" in joined:
+        actions.append("Treat framework annotations as manual migration work and re-implement runtime behavior in Go explicitly.")
+    if not bool(state.get("test_gen_ok", False)):
+        actions.append("Inspect modules with generated test failures before trusting project-level behavior.")
+    if not bool(state.get("last_test_ok", True)):
+        actions.append("Fix failing Go tests and rerun engineering validation before treating the project output as stable.")
+    if not actions and str(state.get("llm_run_metadata", {}).get("conversionStatus") or "") in {"warning", "partial", "unsupported"}:
+        actions.append("Treat project output as a migration draft until partial, warning, or unsupported items are resolved.")
+    return actions
 
 
 def _llm_run_metadata_with_conversion(state: dict[str, Any]) -> dict[str, Any]:
@@ -116,12 +263,28 @@ def _llm_run_metadata_with_conversion(state: dict[str, Any]) -> dict[str, Any]:
     reasons = status_reasons(contributions)
     if reasons:
         meta["statusReasons"] = reasons
-    meta["engineeringStatus"] = {
-        "build": "success" if bool(state.get("last_build_ok")) else "partial",
-        "tests": "success" if bool(state.get("last_test_ok")) else "partial",
-        "testGeneration": "success" if bool(state.get("test_gen_ok")) else "partial",
-        "testQuality": "success" if bool(state.get("test_quality_ok")) else "partial",
-    }
+    meta["engineeringStatus"] = _engineering_status_dict(
+        build_ok=bool(state.get("last_build_ok")),
+        test_ok=bool(state.get("last_test_ok")),
+        test_gen_ok=bool(state.get("test_gen_ok")),
+        test_quality_ok=bool(state.get("test_quality_ok")),
+    )
+    items = _build_conversion_items(state)
+    meta["conversionItems"] = items
+    project_summary, summary_completeness = _project_status_summary_from_state(state, items)
+    meta["projectStatusSummary"] = project_summary
+    meta["summaryCompleteness"] = summary_completeness
+    test_failure_reasons = _test_failure_reasons(state)
+    test_generation_reasons = _test_generation_reasons(state)
+    if test_failure_reasons:
+        meta["testFailureExplanations"] = test_failure_reasons
+    if test_generation_reasons:
+        meta["testGenerationReasons"] = test_generation_reasons
+    next_actions = _recommended_next_actions(
+        state, reasons + test_failure_reasons + test_generation_reasons
+    )
+    if next_actions:
+        meta["recommendedNextActions"] = next_actions
     meta["calls"] = calls
     return meta
 

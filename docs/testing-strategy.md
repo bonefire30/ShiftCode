@@ -103,7 +103,9 @@ python scripts/run_layered_evaluation_suite.py --suite core --profile deepseek -
 Every fixture entry must include `id`, `purpose`, `javaPattern`,
 `expectedStatus`, and `mustNotReportSuccess`. Reports must include profile,
 provider, model, latency/token usage when available, `llmCallStatus`, and
-`conversionStatus`.
+`conversionStatus`. Project-level runs should also include summary counts,
+module/file conversion items where available, test/test-generation explanations,
+and recommended next actions.
 
 Mock reports validate manifest/report/status wiring only. They do not generate
 Go output and do not require `go_output_dir`. Real LLM reports must include a

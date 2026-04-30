@@ -89,6 +89,86 @@ class TestLLMWorkflowMetadata(unittest.TestCase):
         self.assertEqual(error_meta["llmCallStatus"], "error")
         self.assertEqual(error_meta["conversionStatus"], "error")
 
+    def test_project_conversion_status_is_not_weaker_than_child_items(self) -> None:
+        from multi_agent_workflow import _llm_run_metadata_with_conversion
+
+        state = {
+            "java_infos": {
+                "ConfigParser.java": {"source_text": "class ConfigParser { Config parse(String text) { return null; } }"},
+                "Repo.java": {"source_text": "class Repo {}"},
+            },
+            "modules": [["ConfigParser.java"], ["Repo.java"]],
+            "file_states": {
+                "ConfigParser.java": {"conversionStatus": "partial"},
+                "Repo.java": {"conversionStatus": "success"},
+            },
+            "last_build_ok": True,
+            "last_test_ok": True,
+            "test_gen_ok": True,
+            "test_quality_ok": True,
+            "llm_run_metadata": {"calls": [{"llmCallStatus": "success"}]},
+        }
+        meta = _llm_run_metadata_with_conversion(state)
+        self.assertEqual(meta["conversionStatus"], "partial")
+        self.assertEqual(meta["projectStatusSummary"]["partial"], 1)
+
+    def test_project_level_explainability_fields_are_present(self) -> None:
+        from multi_agent_workflow import _llm_run_metadata_with_conversion
+
+        state = {
+            "java_infos": {
+                "ConfigParser.java": {"source_text": "public static AppConfig parse(InputStream in) throws IOException { return null; }"}
+            },
+            "modules": [["ConfigParser.java"]],
+            "file_states": {
+                "ConfigParser.java": {"conversionStatus": "partial"}
+            },
+            "last_build_ok": True,
+            "last_test_ok": False,
+            "test_gen_ok": False,
+            "test_quality_ok": True,
+            "test_gen_failures": ["module mod0: missing generated tests"],
+            "llm_run_metadata": {"calls": [{"llmCallStatus": "success"}]},
+        }
+        meta = _llm_run_metadata_with_conversion(state)
+        self.assertIn("projectStatusSummary", meta)
+        self.assertEqual(meta["projectStatusSummary"]["partial"], 1)
+        self.assertEqual(meta["summaryCompleteness"], "complete")
+        self.assertIn("conversionItems", meta)
+        self.assertEqual(meta["conversionItems"][0]["id"], "mod0")
+        self.assertEqual(meta["conversionItems"][0]["status"], "partial")
+        self.assertEqual(meta["conversionItems"][0]["semanticStatus"], "partial")
+        self.assertEqual(meta["conversionItems"][0]["classifierStatus"], "partial")
+        self.assertIn("testFailureExplanations", meta)
+        self.assertTrue(meta["testFailureExplanations"])
+        self.assertIn("testGenerationReasons", meta)
+        self.assertTrue(meta["testGenerationReasons"])
+        self.assertIn("recommendedNextActions", meta)
+        self.assertTrue(meta["recommendedNextActions"])
+
+    def test_summary_completeness_is_incomplete_when_items_do_not_explain_aggregate(self) -> None:
+        from multi_agent_workflow import _project_status_summary_from_state
+
+        state = {
+            "java_infos": {"A.java": {"source_text": "class A {}"}},
+            "last_build_ok": True,
+            "last_test_ok": False,
+            "test_gen_ok": False,
+            "test_quality_ok": True,
+            "llm_run_metadata": {"calls": [{"llmCallStatus": "success"}]},
+        }
+        items = [{
+            "id": "mod0",
+            "status": "success",
+            "semanticStatus": "success",
+            "classifierStatus": "success",
+            "reasons": [],
+            "engineeringStatus": {"build": "success", "tests": "partial", "testGeneration": "partial", "testQuality": "success"},
+        }]
+        summary, completeness = _project_status_summary_from_state(state, items)
+        self.assertEqual(summary["success"], 1)
+        self.assertEqual(completeness, "incomplete")
+
 
 if __name__ == "__main__":
     unittest.main()

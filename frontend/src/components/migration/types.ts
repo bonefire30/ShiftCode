@@ -24,8 +24,27 @@ export type LlmEvaluationMetadata = {
     testGeneration?: string | null
     testQuality?: string | null
   }
+  projectStatusSummary?: Record<string, number>
+  summaryCompleteness?: 'complete' | 'aggregate-only' | 'incomplete' | string | null
+  testFailureReasons?: string[]
+  testGenerationReasons?: string[]
+  recommendedNextActions?: string[]
+  conversionItems?: ConversionItem[]
   errorMessage?: string | null
   retryable?: boolean | null
+}
+
+export type ConversionItem = {
+  id?: string | null
+  path?: string | null
+  status?: string | null
+  reasons?: string[]
+  engineeringStatus?: {
+    build?: string | null
+    tests?: string | null
+    testGeneration?: string | null
+    testQuality?: string | null
+  }
 }
 
 export type FileState = {

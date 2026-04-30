@@ -88,6 +88,43 @@ class TestLayeredEvaluationSuite(unittest.TestCase):
         self.assertEqual(report["failed"], 1)
         self.assertIn("expected conversionStatus warning, got success", report["results"][0]["gateFailures"])
 
+    def test_real_report_includes_project_explainability_fields(self) -> None:
+        manifest = load_manifest()
+
+        def fake_stream(*_args, **_kwargs):
+            yield "reviewer", {
+                "llm_run_metadata": {
+                    "llmCallStatus": "success",
+                    "conversionStatus": "partial",
+                    "projectStatusSummary": {"success": 0, "warning": 0, "partial": 1, "unsupported": 0, "error": 0},
+                    "summaryCompleteness": "complete",
+                    "conversionItems": [{"id": "mod0", "status": "partial", "reasons": ["x"], "engineeringStatus": {"build": "success", "tests": "partial", "testGeneration": "partial", "testQuality": "success"}}],
+                    "testFailureExplanations": ["tests are partial"],
+                    "testGenerationReasons": ["generated tests are partial"],
+                    "recommendedNextActions": ["inspect failing tests"],
+                },
+                "last_build_ok": True,
+                "last_test_ok": False,
+                "test_gen_ok": False,
+                "test_quality_ok": True,
+                "go_output_dir": "project_migrations/fake",
+            }
+
+        from unittest.mock import patch
+
+        with patch("scripts.run_layered_evaluation_suite.validate_profile_runtime"), patch(
+            "scripts.run_layered_evaluation_suite.stream_project_workflow",
+            side_effect=fake_stream,
+        ):
+            report = run_suite(suite="features", profile="codex-proxy", confirm_real_llm=True, manifest=manifest)
+        result = report["results"][0]
+        self.assertIn("projectStatusSummary", result)
+        self.assertEqual(result["summaryCompleteness"], "complete")
+        self.assertIn("conversionItems", result)
+        self.assertIn("testFailureExplanations", result)
+        self.assertIn("testGenerationReasons", result)
+        self.assertIn("recommendedNextActions", result)
+
 
 if __name__ == "__main__":
     unittest.main()

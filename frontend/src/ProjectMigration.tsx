@@ -10,6 +10,7 @@ import { TestGenerationStatus } from './components/migration/TestGenerationStatu
 import { WorkflowTimeline } from './components/migration/WorkflowTimeline'
 import type {
   CaseItem,
+  ConversionItem,
   FileState,
   HitlPayload,
   LlmEvaluationMetadata,
@@ -373,6 +374,16 @@ function extractLlmMetadata(
       readNumberRecord(state?.status_counts) ??
       readNumberRecord(llm?.statusCounts) ??
       readNumberRecord(llm?.status_counts),
+    projectStatusSummary:
+      readNumberRecord(state?.projectStatusSummary) ??
+      readNumberRecord(state?.project_status_summary) ??
+      readNumberRecord(llm?.projectStatusSummary) ??
+      readNumberRecord(llm?.project_status_summary),
+    summaryCompleteness:
+      readString(state?.summaryCompleteness) ??
+      readString(state?.summary_completeness) ??
+      readString(llm?.summaryCompleteness) ??
+      readString(llm?.summary_completeness),
     engineeringStatus: {
       build:
         readString(engineeringStatus?.build) ??
@@ -390,6 +401,51 @@ function extractLlmMetadata(
         readString(engineeringStatus?.test_quality) ??
         statusFromBoolean(engineeringChecks.testQuality),
     },
+    testFailureReasons:
+      readStringArray(state?.testFailureReasons) ??
+      readStringArray(state?.test_failure_reasons) ??
+      readStringArray(llm?.testFailureReasons) ??
+      readStringArray(llm?.test_failure_reasons) ??
+      deriveEngineeringFallback(
+        readString(engineeringStatus?.tests) ?? readString(engineeringStatus?.test),
+        'Test details unavailable; inspect reviewer logs or generated Go test output.'
+      ),
+    testGenerationReasons:
+      readStringArray(state?.testGenerationReasons) ??
+      readStringArray(state?.test_generation_reasons) ??
+      readStringArray(llm?.testGenerationReasons) ??
+      readStringArray(llm?.test_generation_reasons) ??
+      deriveEngineeringFallback(
+        readString(engineeringStatus?.testGeneration) ?? readString(engineeringStatus?.test_generation),
+        'Test-generation details unavailable; inspect workflow logs for failed or partial generation.'
+      ),
+    recommendedNextActions:
+      readStringArray(state?.recommendedNextActions) ??
+      readStringArray(state?.recommended_next_actions) ??
+      readStringArray(llm?.recommendedNextActions) ??
+      readStringArray(llm?.recommended_next_actions) ??
+      deriveRecommendedNextActions(
+        readStringArray(llm?.statusReasons) ??
+          readStringArray(llm?.status_reasons) ??
+          readStringArray(state?.statusReasons) ??
+          readStringArray(state?.status_reasons) ??
+          [],
+        readString(llm?.conversionStatus) ??
+          readString(llm?.conversion_status) ??
+          readString(state?.conversion_status),
+        readStringArray(state?.testFailureReasons) ??
+          readStringArray(state?.test_failure_reasons) ??
+          [],
+        readStringArray(state?.testGenerationReasons) ??
+          readStringArray(state?.test_generation_reasons) ??
+          []
+      ),
+    conversionItems:
+      readConversionItems(state?.conversionItems) ??
+      readConversionItems(state?.conversion_items) ??
+      readConversionItems(llm?.conversionItems) ??
+      readConversionItems(llm?.conversion_items) ??
+      [],
     errorMessage:
       readString(error?.message) ?? readString(error?.detail) ?? readString(state?.llm_error_message),
     retryable: readBoolean(error?.retryable) ?? readBoolean(llm?.retryable),
@@ -427,6 +483,40 @@ function readNumberRecord(value: unknown): Record<string, number> | undefined {
   return entries.length > 0 ? Object.fromEntries(entries) : undefined
 }
 
+function readEngineeringStatus(value: unknown): ConversionItem['engineeringStatus'] | undefined {
+  const record = asRecord(value)
+  if (!record) return undefined
+  return {
+    build: readString(record.build),
+    tests: readString(record.tests) ?? readString(record.test),
+    testGeneration: readString(record.testGeneration) ?? readString(record.test_generation),
+    testQuality: readString(record.testQuality) ?? readString(record.test_quality),
+  }
+}
+
+function readConversionItems(value: unknown): ConversionItem[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const items: ConversionItem[] = []
+  value.forEach((item) => {
+    const record = asRecord(item)
+    if (!record) return
+    items.push({
+      id: readString(record.id),
+      path: readString(record.path),
+      status: readString(record.status),
+      reasons:
+        readStringArray(record.reasons) ??
+        readStringArray(record.statusReasons) ??
+        readStringArray(record.status_reasons) ??
+        [],
+      engineeringStatus:
+        readEngineeringStatus(record.engineeringStatus) ??
+        readEngineeringStatus(record.engineering_status),
+    })
+  })
+  return items
+}
+
 function readBoolean(value: unknown): boolean | null {
   return typeof value === 'boolean' ? value : null
 }
@@ -434,6 +524,51 @@ function readBoolean(value: unknown): boolean | null {
 function statusFromBoolean(value: boolean | null) {
   if (value === null) return null
   return value ? 'success' : 'error'
+}
+
+function deriveEngineeringFallback(status: string | null, fallback: string): string[] {
+  if (!status || status === 'success' || status === 'unknown') return []
+  return [fallback]
+}
+
+function deriveRecommendedNextActions(
+  statusReasons: string[],
+  conversionStatus: string | null,
+  testFailureReasons: string[],
+  testGenerationReasons: string[]
+): string[] {
+  const actions = new Set<string>()
+
+  if (conversionStatus === 'unsupported') {
+    actions.add('Prioritize unsupported Java features first and plan manual migration for those areas.')
+  }
+  if (conversionStatus === 'partial') {
+    actions.add('Treat the project output as a migration draft until partial items are resolved.')
+  }
+  if (conversionStatus === 'warning') {
+    actions.add('Review caveats before relying on the generated Go in production paths.')
+  }
+  if (conversionStatus === 'error') {
+    actions.add('Fix the blocking conversion error before reviewing downstream module results.')
+  }
+
+  if (statusReasons.some((reason) => /parser|config|default|error path/i.test(reason))) {
+    actions.add('Review parser/config modules for default-value and error-path semantics.')
+  }
+  if (statusReasons.some((reason) => /stream/i.test(reason))) {
+    actions.add('Rewrite stream-based logic manually into supported Go control flow before trusting behavior.')
+  }
+  if (statusReasons.some((reason) => /generic/i.test(reason))) {
+    actions.add('Inspect generic-heavy code paths and replace them with explicit Go type strategies.')
+  }
+  if (testFailureReasons.length > 0) {
+    actions.add('Inspect modules with failing tests before trusting project-level behavior.')
+  }
+  if (testGenerationReasons.length > 0) {
+    actions.add('Review modules with partial or failed test generation to close migration blind spots.')
+  }
+
+  return Array.from(actions)
 }
 
 function formatLatency(latencyMs: number | null | undefined) {
@@ -473,6 +608,13 @@ function reviewGuidance(status: string | null | undefined) {
 
 function hasNeedsReview(status: string | null | undefined) {
   return status === 'warning' || status === 'partial' || status === 'unsupported' || status === 'error'
+}
+
+function summaryLabel(summaryCompleteness: string | null | undefined) {
+  if (summaryCompleteness === 'aggregate-only') return 'aggregate only'
+  if (summaryCompleteness === 'incomplete') return 'incomplete'
+  if (summaryCompleteness === 'complete') return 'complete'
+  return null
 }
 
 function LlmEvaluationSummary({ metadata }: { metadata: LlmEvaluationMetadata }) {
@@ -536,6 +678,29 @@ function LlmEvaluationSummary({ metadata }: { metadata: LlmEvaluationMetadata })
         </div>
       )}
 
+      {metadata.projectStatusSummary && (
+        <div className="mt-3 rounded border border-slate-800 bg-slate-900/30 p-3 text-xs">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="font-medium text-slate-200">Project status summary</p>
+            {summaryLabel(metadata.summaryCompleteness) && (
+              <span className="rounded-full border border-slate-700 px-2 py-0.5 text-[10px] text-slate-400">
+                {summaryLabel(metadata.summaryCompleteness)}
+              </span>
+            )}
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
+            {(['success', 'warning', 'partial', 'unsupported', 'error'] as const).map((status) => (
+              <span
+                key={`project-${status}`}
+                className={`rounded-full border px-2 py-1 ${conversionStatusClass(status)}`}
+              >
+                {status} {metadata.projectStatusSummary?.[status] ?? 0}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div
         className={`mt-3 rounded border p-3 text-xs ${
           hasNeedsReview(metadata.conversionStatus)
@@ -555,6 +720,91 @@ function LlmEvaluationSummary({ metadata }: { metadata: LlmEvaluationMetadata })
               <li key={`${index}-${reason}`}>{reason}</li>
             ))}
           </ul>
+        </div>
+      )}
+
+      {(metadata.testFailureReasons && metadata.testFailureReasons.length > 0) ||
+      (metadata.testGenerationReasons && metadata.testGenerationReasons.length > 0) ? (
+        <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
+          {metadata.testFailureReasons && metadata.testFailureReasons.length > 0 && (
+            <div className="rounded border border-slate-800 bg-slate-900/30 p-3 text-xs">
+              <p className="font-medium text-slate-200">Why tests are not fully passing</p>
+              <ul className="mt-2 list-disc space-y-1 pl-4 text-slate-300">
+                {metadata.testFailureReasons.map((reason, index) => (
+                  <li key={`${index}-${reason}`}>{reason}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {metadata.testGenerationReasons && metadata.testGenerationReasons.length > 0 && (
+            <div className="rounded border border-slate-800 bg-slate-900/30 p-3 text-xs">
+              <p className="font-medium text-slate-200">Why test generation is partial</p>
+              <ul className="mt-2 list-disc space-y-1 pl-4 text-slate-300">
+                {metadata.testGenerationReasons.map((reason, index) => (
+                  <li key={`${index}-${reason}`}>{reason}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      ) : null}
+
+      {metadata.recommendedNextActions && metadata.recommendedNextActions.length > 0 && (
+        <div className="mt-3 rounded border border-amber-900/50 bg-amber-950/20 p-3 text-xs text-amber-100">
+          <p className="font-medium">Recommended next actions</p>
+          <ul className="mt-2 list-disc space-y-1 pl-4 text-amber-50/90">
+            {metadata.recommendedNextActions.map((action, index) => (
+              <li key={`${index}-${action}`}>{action}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {metadata.conversionItems && metadata.conversionItems.length > 0 && (
+        <div className="mt-3 rounded border border-slate-800 bg-slate-900/30 p-3 text-xs">
+          <p className="font-medium text-slate-200">Items driving project status</p>
+          <div className="mt-3 space-y-3">
+            {metadata.conversionItems.map((item, index) => (
+              <div key={`${item.id || item.path || 'item'}-${index}`} className="rounded border border-slate-800 bg-slate-950/40 p-3">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="truncate font-medium text-slate-200" title={item.path || item.id || 'unknown item'}>
+                      {item.path || item.id || 'unknown item'}
+                    </p>
+                    {item.id && item.path && item.id !== item.path && (
+                      <p className="mt-1 text-slate-500">{item.id}</p>
+                    )}
+                  </div>
+                  <span className={`rounded-full border px-2 py-0.5 text-[10px] ${conversionStatusClass(item.status)}`}>
+                    {item.status || 'unknown'}
+                  </span>
+                </div>
+                {item.reasons && item.reasons.length > 0 && (
+                  <ul className="mt-2 list-disc space-y-1 pl-4 text-slate-300">
+                    {item.reasons.map((reason, reasonIndex) => (
+                      <li key={`${reasonIndex}-${reason}`}>{reason}</li>
+                    ))}
+                  </ul>
+                )}
+                {item.engineeringStatus && (
+                  <div className="mt-2 flex flex-wrap gap-2 text-[10px]">
+                    <span className="rounded-full border border-slate-700 px-2 py-0.5 text-slate-300">
+                      build {item.engineeringStatus.build || 'unknown'}
+                    </span>
+                    <span className="rounded-full border border-slate-700 px-2 py-0.5 text-slate-300">
+                      tests {item.engineeringStatus.tests || 'unknown'}
+                    </span>
+                    <span className="rounded-full border border-slate-700 px-2 py-0.5 text-slate-300">
+                      test gen {item.engineeringStatus.testGeneration || 'unknown'}
+                    </span>
+                    <span className="rounded-full border border-slate-700 px-2 py-0.5 text-slate-300">
+                      test quality {item.engineeringStatus.testQuality || 'unknown'}
+                    </span>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
