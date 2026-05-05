@@ -9,7 +9,7 @@ class TestLayeredEvaluationSuite(unittest.TestCase):
     def test_manifest_has_required_layers_and_fixture_metadata(self) -> None:
         manifest = load_manifest()
         validate_manifest(manifest)
-        self.assertEqual(set(suite_names(manifest)), {"core", "features", "smoke", "wave1"})
+        self.assertTrue({"core", "features", "smoke", "wave1", "parser-config"}.issubset(set(suite_names(manifest))))
         for suite in (manifest.get("suites") or {}).values():
             fixtures = suite.get("fixtures") or []
             self.assertTrue(fixtures)

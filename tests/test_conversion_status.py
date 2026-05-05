@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import unittest
 
-from conversion_status import classify_java_sources, final_conversion_status, merge_statuses
+from conversion_status import (
+    classify_java_sources,
+    final_conversion_status,
+    merge_statuses,
+    status_reason_details,
+)
 
 
 class TestConversionStatus(unittest.TestCase):
@@ -22,7 +27,14 @@ class TestConversionStatus(unittest.TestCase):
 
     def test_framework_annotation_contributes_unsupported(self) -> None:
         contributions = classify_java_sources("@Service\npublic class UserService {}")
-        self.assertTrue(any(c.status == "unsupported" and "annotation" in c.reason.lower() for c in contributions))
+        details = status_reason_details(contributions)
+        self.assertTrue(
+            any(
+                d["status"] == "unsupported"
+                and d["category"] == "config_dynamic_or_framework_unsupported"
+                for d in details
+            )
+        )
 
     def test_exception_flow_contributes_partial(self) -> None:
         contributions = classify_java_sources("void load() throws IOException { throw new IOException(); }")
@@ -43,6 +55,31 @@ class TestConversionStatus(unittest.TestCase):
     def test_config_parser_contributes_warning(self) -> None:
         contributions = classify_java_sources("Config parseConfig(String text) { return new Config(); }")
         self.assertTrue(any(c.status == "warning" and "parser" in c.reason.lower() for c in contributions))
+
+    def test_config_map_lookup_contributes_specific_warning_category(self) -> None:
+        contributions = classify_java_sources("String host = config.get(\"host\");")
+        details = status_reason_details(contributions)
+        self.assertTrue(any(d["category"] == "config_map_lookup_missing_key_caveat" and d["status"] == "warning" for d in details))
+
+    def test_config_default_fallback_contributes_specific_warning_category(self) -> None:
+        contributions = classify_java_sources("String port = config.getOrDefault(\"port\", \"8080\");")
+        details = status_reason_details(contributions)
+        self.assertTrue(any(d["category"] == "config_default_value_fallback" and d["status"] == "warning" for d in details))
+
+    def test_config_required_field_validation_contributes_partial_category(self) -> None:
+        contributions = classify_java_sources("if (!config.containsKey(\"host\") || config.get(\"host\") == null) { throw new IllegalArgumentException(\"host is required\"); }")
+        details = status_reason_details(contributions)
+        self.assertTrue(any(d["category"] == "config_required_field_error_return" and d["status"] == "partial" for d in details))
+
+    def test_config_parse_failure_contributes_partial_category(self) -> None:
+        contributions = classify_java_sources("return Integer.parseInt(config.get(\"timeout\"));")
+        details = status_reason_details(contributions)
+        self.assertTrue(any(d["category"] == "config_parse_failure_error_return" and d["status"] == "partial" for d in details))
+
+    def test_framework_config_annotation_contributes_unsupported_category(self) -> None:
+        contributions = classify_java_sources("@ConfigurationProperties(prefix = \"app\")\nclass AppConfig {}")
+        details = status_reason_details(contributions)
+        self.assertTrue(any(d["category"] == "config_dynamic_or_framework_unsupported" and d["status"] == "unsupported" for d in details))
 
     def test_build_success_cannot_override_known_limitation(self) -> None:
         contributions = classify_java_sources("items.stream().count();")

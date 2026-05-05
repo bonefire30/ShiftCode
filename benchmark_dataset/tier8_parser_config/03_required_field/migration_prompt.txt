@@ -1,0 +1,6 @@
+Migrate this Java class to idiomatic Go.
+
+Requirements:
+- Output package `parserconfig`.
+- Convert required-field validation into explicit Go error handling.
+- Do not report this pattern as broad parser/config success.

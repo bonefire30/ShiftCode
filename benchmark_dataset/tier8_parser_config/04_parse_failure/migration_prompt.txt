@@ -1,0 +1,6 @@
+Migrate this Java class to idiomatic Go.
+
+Requirements:
+- Output package `parserconfig`.
+- Convert parse failures into explicit Go error handling.
+- Keep the report conservative; parse-error behavior must be reviewed.

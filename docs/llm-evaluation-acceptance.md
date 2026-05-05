@@ -153,3 +153,43 @@ Allowed release wording for this stage:
 ```text
 JAVA2GO now turns project-level partial results into clearer migration actions by explaining test and generated-test issues separately from conversion support status.
 ```
+
+## Accepted Parser/Config Conversion Subset
+
+The accepted parser/config subset focuses on four narrow patterns only:
+
+- map-backed config lookup
+- default value fallback
+- required-field validation
+- simple parse failure
+
+Accepted evidence:
+
+- `docs/conversion-rules.md` documents all four parser/config subset rules.
+- `conversion_status.py` emits specific parser/config categories:
+  - `config_map_lookup_missing_key_caveat`
+  - `config_default_value_fallback`
+  - `config_required_field_error_return`
+  - `config_parse_failure_error_return`
+  - `config_dynamic_or_framework_unsupported`
+- `evaluation_suites/manifest.json` defines the `parser-config` suite with four fixtures.
+- `tests/test_conversion_status.py` covers the parser/config categories and status behavior.
+- `run_logs/layered_eval_parser_config_mock_latest.json` shows conservative mock expectations:
+  - map lookup -> `warning`
+  - default fallback -> `warning`
+  - required field validation -> `partial`
+  - parse failure -> `partial`
+
+Why this matters:
+
+- Parser/config reports are now more specific than a generic caveat.
+- Developers can distinguish missing-key/default review from required-field or parse-failure error-return review.
+- The subset remains explicitly narrow and does not claim framework or broad config support.
+
+Product interpretation:
+
+```text
+JAVA2GO now supports a narrow, test-backed parser/config subset with more useful
+reasons and conservative statuses, while leaving framework and dynamic config
+behavior explicitly out of scope.
+```

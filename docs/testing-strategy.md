@@ -75,6 +75,9 @@ Suites are defined in `evaluation_suites/manifest.json`:
 - `features`: known-limitation fixtures for checked exceptions, generics,
   framework annotations, and stream pipelines. These fixtures must not hide
   unsupported or partial behavior as `success`.
+- `parser-config`: narrow parser/config subset fixtures for map lookup, default
+  fallback, required-field validation, and simple parse failure. These fixtures
+  verify conservative status behavior, not full config-framework support.
 - `wave1`: stage-gate full-project evaluation for release or model-decision
   points only. It is not a default debugging suite.
 
@@ -84,6 +87,7 @@ Default runs are mock-only:
 python scripts/run_layered_evaluation_suite.py --suite smoke
 python scripts/run_layered_evaluation_suite.py --suite core
 python scripts/run_layered_evaluation_suite.py --suite features
+python scripts/run_layered_evaluation_suite.py --suite parser-config
 ```
 
 Real provider calls require an explicit profile and confirmation:

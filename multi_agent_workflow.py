@@ -34,6 +34,7 @@ from conversion_status import (
     final_conversion_status,
     merge_statuses,
     status_reasons,
+    status_reason_details,
 )
 from dependency_graph import (
     build_dependency_graph,
@@ -326,6 +327,7 @@ def _llm_run_metadata_with_conversion(state: dict[str, Any]) -> dict[str, Any]:
     reasons = status_reasons(contributions)
     if reasons:
         meta["statusReasons"] = reasons
+        meta["statusReasonDetails"] = status_reason_details(contributions)
     meta["engineeringStatus"] = _engineering_status_dict(
         build_ok=bool(state.get("last_build_ok")),
         test_ok=bool(state.get("last_test_ok")),

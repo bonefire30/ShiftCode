@@ -1,0 +1,6 @@
+Migrate this Java class to idiomatic Go.
+
+Requirements:
+- Output package `parserconfig`.
+- Preserve the default value fallback behavior.
+- Report missing-key/default-value behavior conservatively unless it is proven safe.

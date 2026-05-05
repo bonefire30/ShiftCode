@@ -111,6 +111,45 @@
         }
       ]
     },
+    "parser-config": {
+      "purpose": "Narrow parser/config subset evaluation with explicit missing-key, default, validation, and parse-failure patterns.",
+      "defaultProfiles": ["mock"],
+      "allowRealProfiles": ["minimax", "codex-proxy"],
+      "fixtures": [
+        {
+          "id": "parser-config.map_lookup",
+          "path": "benchmark_dataset/tier8_parser_config/01_map_lookup",
+          "purpose": "Map-backed config lookup with missing-key caveat.",
+          "javaPattern": "config.get(\"key\")",
+          "expectedStatus": "warning",
+          "mustNotReportSuccess": true
+        },
+        {
+          "id": "parser-config.default_fallback",
+          "path": "benchmark_dataset/tier8_parser_config/02_default_fallback",
+          "purpose": "Default value fallback for missing config keys.",
+          "javaPattern": "config.getOrDefault(\"key\", \"default\")",
+          "expectedStatus": "warning",
+          "mustNotReportSuccess": true
+        },
+        {
+          "id": "parser-config.required_field_validation",
+          "path": "benchmark_dataset/tier8_parser_config/03_required_field",
+          "purpose": "Required-field validation that should become explicit Go error handling.",
+          "javaPattern": "containsKey/null check then throw",
+          "expectedStatus": "partial",
+          "mustNotReportSuccess": true
+        },
+        {
+          "id": "parser-config.parse_failure",
+          "path": "benchmark_dataset/tier8_parser_config/04_parse_failure",
+          "purpose": "Simple parse failure converted to explicit Go error return.",
+          "javaPattern": "Integer.parseInt(config.get(...))",
+          "expectedStatus": "partial",
+          "mustNotReportSuccess": true
+        }
+      ]
+    },
     "wave1": {
       "purpose": "Stage-gate full-project benchmark for release/model decisions only. Not for daily debugging.",
       "defaultProfiles": [],
