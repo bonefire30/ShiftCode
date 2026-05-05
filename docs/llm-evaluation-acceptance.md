@@ -222,3 +222,31 @@ Product interpretation:
 ```text
 JAVA2GO now explains its MVP capabilities with concrete examples and report-reading guidance, so users can tell what is safe, what needs review, and what remains unsupported.
 ```
+
+## Accepted External Trial Package
+
+The accepted external trial package adds:
+
+- `docs/external-trial-guide.md`
+- `docs/external-trial-checklist.md`
+- `docs/external-trial-feedback-template.md`
+
+Accepted outcome:
+
+- The default trial path is low-cost and does not require real LLM API keys.
+- Trial inputs are small, understandable, and aligned with the current supported scope.
+- The optional real LLM path is clearly manual and potentially paid.
+- Trial docs explain what JAVA2GO is and is not, including the limits of `success`, `warning`, `partial`, and `unsupported`.
+- The frontend trial path shows overall status, reasons, and next actions without implying full semantic equivalence.
+
+Why this matters:
+
+- An external developer can try the current MVP with minimal private project context.
+- A reviewer can understand the report structure and current support scope without reading implementation code.
+- Trial users can distinguish unsupported behavior from product bugs and continue manual migration with clearer expectations.
+
+Product interpretation:
+
+```text
+JAVA2GO is now packaged well enough for a small external trial: users can start with a safe low-cost path, optionally run one paid confirmation, and read the resulting report honestly.
+```

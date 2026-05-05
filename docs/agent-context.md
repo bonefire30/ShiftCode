@@ -7,6 +7,7 @@ Use this file as a short index. Do not assume every project document is already 
 ## When To Read Project Docs
 
 - For general engineering changes, read `docs/development-standards.md`.
+- For test, benchmark, fixture, and example directory usage, read `docs/test-assets-structure.md`.
 - For conversion engine behavior, read `docs/conversion-rules.md` before adding or changing Java-to-Go rules.
 - For tests, regression coverage, or quality gates, read `docs/testing-strategy.md`.
 - For roadmap, scope, or prioritization work, read `docs/product-roadmap.md`.

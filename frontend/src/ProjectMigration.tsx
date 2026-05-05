@@ -253,6 +253,21 @@ export function ProjectMigration() {
         闭环修复。路径须位于仓库内。
       </p>
 
+      <div className="rounded-lg border border-slate-800 bg-slate-950/30 p-3 text-xs text-slate-400">
+        <p className="font-medium text-slate-200">How to read a trial result</p>
+        <div className="mt-2 grid grid-cols-1 gap-2 lg:grid-cols-3">
+          <p>
+            <span className="text-slate-300">Overall status:</span> `success`, `warning`, `partial`, `unsupported`, `error` 表示转换支持结论，不等于模型调用是否成功。
+          </p>
+          <p>
+            <span className="text-slate-300">Engineering checks:</span> build/test/test generation 通过只能说明工程验证结果，不能单独证明语义等价。
+          </p>
+          <p>
+            <span className="text-slate-300">Next actions:</span> 如果结果是 `partial` 或 `unsupported`，优先看 status reasons、test issues 和 recommended next actions。
+          </p>
+        </div>
+      </div>
+
       <MigrationSetupPanel
         cases={cases}
         projectPath={projectPath}
@@ -688,6 +703,25 @@ function hasNeedsReview(status: string | null | undefined) {
   return status === 'warning' || status === 'partial' || status === 'unsupported' || status === 'error'
 }
 
+function trialStatusNote(status: string | null | undefined) {
+  if (status === 'success') {
+    return 'For a small trial, this means JAVA2GO found a supported-scope path with no reported caveats.'
+  }
+  if (status === 'warning') {
+    return 'For a small trial, this usually means the output is usable but still needs targeted review.'
+  }
+  if (status === 'partial') {
+    return 'For a small trial, partial is a normal outcome: some useful output exists, but manual follow-up is still required.'
+  }
+  if (status === 'unsupported') {
+    return 'For a small trial, unsupported means JAVA2GO recognized a known limitation instead of hiding it as a generic bug.'
+  }
+  if (status === 'error') {
+    return 'For a small trial, error means the conversion failed unexpectedly and should be debugged before drawing product conclusions.'
+  }
+  return 'Trial result is waiting for backend status metadata.'
+}
+
 function summaryLabel(summaryCompleteness: string | null | undefined) {
   if (summaryCompleteness === 'aggregate-only') return 'aggregate only'
   if (summaryCompleteness === 'incomplete') return 'incomplete'
@@ -818,6 +852,7 @@ function LlmEvaluationSummary({ metadata }: { metadata: LlmEvaluationMetadata })
       >
         <p className="font-medium">Conversion decision</p>
         <p className="mt-1 text-slate-300">{reviewGuidance(metadata.conversionStatus)}</p>
+        <p className="mt-2 text-slate-500">{trialStatusNote(metadata.conversionStatus)}</p>
       </div>
 
       {metadata.statusReasons && metadata.statusReasons.length > 0 && (
