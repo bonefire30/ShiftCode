@@ -1,0 +1,6 @@
+Migrate this Java class to idiomatic Go.
+
+Requirements:
+- Output package `exceptionflow`.
+- Preserve the fallback behavior, but report the exception-like control flow conservatively.
+- Do not claim broad checked exception support.

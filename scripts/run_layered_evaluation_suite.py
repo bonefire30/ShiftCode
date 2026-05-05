@@ -30,7 +30,7 @@ MANIFEST_PATH = ROOT / "evaluation_suites" / "manifest.json"
 RUN_LOGS = ROOT / "run_logs"
 VALID_STATUSES = {"success", "warning", "partial", "unsupported", "error"}
 VALID_REAL_PROFILES = {"minimax", "deepseek", "codex-proxy"}
-REQUIRED_SUITES = {"smoke", "core", "features", "wave1"}
+REQUIRED_SUITES = {"smoke", "core", "features", "wave1", "parser-config", "exception-flow"}
 REQUIRED_FIXTURE_KEYS = {"id", "path", "purpose", "javaPattern", "expectedStatus", "mustNotReportSuccess"}
 
 

@@ -1,0 +1,6 @@
+Migrate this Java class to idiomatic Go.
+
+Requirements:
+- Output package `exceptionflow`.
+- Keep retry loop behavior conservative and explain that retry/error semantics need manual review.
+- Do not report this narrow subset as broad checked exception support.

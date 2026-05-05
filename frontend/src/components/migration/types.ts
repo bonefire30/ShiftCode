@@ -28,6 +28,7 @@ export type LlmEvaluationMetadata = {
   summaryCompleteness?: 'complete' | 'aggregate-only' | 'incomplete' | string | null
   testFailureReasons?: string[]
   testGenerationReasons?: string[]
+  exceptionFlowReasons?: string[]
   recommendedNextActions?: string[]
   conversionItems?: ConversionItem[]
   errorMessage?: string | null
@@ -43,6 +44,7 @@ export type ConversionItem = {
   reasons?: string[]
   testIssueReasons?: string[]
   testGenerationIssueReasons?: string[]
+  exceptionFlowReasons?: string[]
   engineeringStatus?: {
     build?: string | null
     tests?: string | null

@@ -40,6 +40,26 @@ class TestConversionStatus(unittest.TestCase):
         contributions = classify_java_sources("void load() throws IOException { throw new IOException(); }")
         self.assertTrue(any(c.status == "partial" and "exception" in c.reason.lower() for c in contributions))
 
+    def test_validation_throw_error_return_category(self) -> None:
+        contributions = classify_java_sources("if (age < 0) { throw new IllegalArgumentException(\"age cannot be negative\"); }")
+        details = status_reason_details(contributions)
+        self.assertTrue(any(d["category"] == "validation_throw_error_return" and d["status"] == "partial" for d in details))
+
+    def test_single_operation_fallback_flow_category(self) -> None:
+        contributions = classify_java_sources("try { return fetch(primary); } catch (RuntimeException e) { return \"fallback\"; }")
+        details = status_reason_details(contributions)
+        self.assertTrue(any(d["category"] == "single_operation_fallback_flow" and d["status"] == "partial" for d in details))
+
+    def test_retry_loop_manual_review_category(self) -> None:
+        contributions = classify_java_sources("while (true) { try { return task.run(); } catch (Exception e) { attempt++; if (attempt >= maxAttempts) { throw e; } } }")
+        details = status_reason_details(contributions)
+        self.assertTrue(any(d["category"] == "retry_loop_manual_review" and d["status"] == "partial" for d in details))
+
+    def test_parse_failure_error_return_category(self) -> None:
+        contributions = classify_java_sources("try { return Integer.parseInt(raw); } catch (NumberFormatException e) { throw new IllegalArgumentException(\"timeout is invalid\"); }")
+        details = status_reason_details(contributions)
+        self.assertTrue(any(d["category"] == "parse_failure_error_return" and d["status"] == "partial" for d in details))
+
     def test_illegal_argument_constructor_precondition_does_not_contribute_partial(self) -> None:
         contributions = classify_java_sources(
             "public LRUCache(int capacity) { if (capacity < 1) { throw new IllegalArgumentException(\"capacity must be >= 1\"); } }"

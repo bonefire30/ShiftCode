@@ -250,3 +250,38 @@ Product interpretation:
 ```text
 JAVA2GO is now packaged well enough for a small external trial: users can start with a safe low-cost path, optionally run one paid confirmation, and read the resulting report honestly.
 ```
+
+## Accepted Checked-Exception-Like Error Flow Strategy
+
+The accepted narrow exception-flow subset focuses on four reviewable patterns:
+
+- validation throw to error return
+- single-operation fallback flow
+- retry loop with one exception path
+- parse failure catch to explicit error return
+
+Accepted evidence:
+
+- `docs/conversion-rules.md` documents the narrow exception-flow rules.
+- `evaluation_suites/manifest.json` defines the `exception-flow` suite.
+- `benchmark_dataset/tier7_exception_subset/` includes fixture coverage for the selected patterns.
+- `tests/test_conversion_status.py` now passes with explicit exception-flow category coverage.
+- `run_logs/layered_eval_exception_flow_mock_latest.json` confirms conservative mock expectations for all four patterns.
+
+Accepted outcome:
+
+- Validation/fallback/retry/parse-failure flows are reported as `partial`, not inflated to `success`.
+- Constructor or parameter preconditions such as local `IllegalArgumentException` are no longer misclassified as broad exception-flow partials.
+- Reports can explain how Java exception-style control flow became explicit Go error-return review work.
+
+Why this matters:
+
+- Developers can distinguish narrow supported exception-like rewrites from still-unsupported broad checked exception behavior.
+- Reviewers can see that build/test success does not erase exception-flow caveats.
+- The product stays conservative while becoming more useful for common service/backend control-flow patterns.
+
+Product interpretation:
+
+```text
+JAVA2GO now handles a narrow checked-exception-like subset more explicitly, with better reasons and conservative partial statuses, without claiming broad exception compatibility.
+```

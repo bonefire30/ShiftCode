@@ -18,6 +18,7 @@ Use this file as a short index. Do not assume every project document is already 
 
 - Keep changes small and reviewable.
 - Preserve the status model from `AGENTS.md`: success, warning, partial, unsupported, error.
+- Put active task files under `task/` and move quality-review-approved tasks to `task/completed/`.
 - Prefer documenting new conversion behavior in `docs/conversion-rules.md` instead of relying on chat history.
 - Prefer documenting new limitations in `docs/known-limitations.md` when support is partial or unsupported.
 - Do not run tests or commands that trigger LLM API calls; provide the command for the user to run instead.

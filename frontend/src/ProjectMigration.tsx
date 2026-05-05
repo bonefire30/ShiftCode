@@ -434,6 +434,9 @@ function extractLlmMetadata(
         readString(engineeringStatus?.testGeneration) ?? readString(engineeringStatus?.test_generation),
         'Test-generation details unavailable; inspect workflow logs for failed or partial generation.'
       ),
+    exceptionFlowReasons:
+      readExceptionFlowReasons(llm, state) ??
+      [],
     recommendedNextActions:
       readStringArray(state?.recommendedNextActions) ??
       readStringArray(state?.recommended_next_actions) ??
@@ -453,7 +456,8 @@ function extractLlmMetadata(
           [],
         readStringArray(state?.testGenerationReasons) ??
           readStringArray(state?.test_generation_reasons) ??
-          []
+          [],
+        readExceptionFlowReasons(llm, state) ?? []
       ),
     conversionItems:
       readConversionItems(state?.conversionItems) ??
@@ -538,6 +542,15 @@ function readConversionItems(value: unknown): ConversionItem[] | undefined {
         readStringArray(record.testGenerationReasons) ??
         readStringArray(record.test_generation_reasons) ??
         [],
+      exceptionFlowReasons:
+        readStringArray(record.exceptionFlowReasons) ??
+        readStringArray(record.exception_flow_reasons) ??
+        filterExceptionReasons(
+          readStringArray(record.reasons) ??
+            readStringArray(record.statusReasons) ??
+            readStringArray(record.status_reasons) ??
+            []
+        ),
       engineeringStatus:
         readEngineeringStatus(record.engineeringStatus) ??
         readEngineeringStatus(record.engineering_status),
@@ -564,7 +577,8 @@ function deriveRecommendedNextActions(
   statusReasons: string[],
   conversionStatus: string | null,
   testFailureReasons: string[],
-  testGenerationReasons: string[]
+  testGenerationReasons: string[],
+  exceptionFlowReasons: string[]
 ): string[] {
   const actions = new Set<string>()
 
@@ -590,6 +604,21 @@ function deriveRecommendedNextActions(
   if (statusReasons.some((reason) => /generic/i.test(reason))) {
     actions.add('Inspect generic-heavy code paths and replace them with explicit Go type strategies.')
   }
+  if (exceptionFlowReasons.some((reason) => /validation_throw_error_return/i.test(reason))) {
+    actions.add('Verify that Java validation throws now map to the intended Go error-return behavior.')
+  }
+  if (exceptionFlowReasons.some((reason) => /single_operation_fallback_flow/i.test(reason))) {
+    actions.add('Review fallback semantics to confirm the Go path preserves the intended Java recovery behavior.')
+  }
+  if (exceptionFlowReasons.some((reason) => /retry_loop_manual_review/i.test(reason))) {
+    actions.add('Check retry limits, retry exit conditions, and final error-return behavior manually.')
+  }
+  if (exceptionFlowReasons.some((reason) => /parse_failure_error_return/i.test(reason))) {
+    actions.add('Verify parse failures now return explicit Go errors with the intended caller-visible message.')
+  }
+  if (exceptionFlowReasons.some((reason) => /broad_checked_exception_unsupported/i.test(reason))) {
+    actions.add('Treat broad checked-exception behavior as unsupported and plan manual redesign of exception flow.')
+  }
   if (testFailureReasons.length > 0) {
     actions.add('Inspect modules with failing tests before trusting project-level behavior.')
   }
@@ -598,6 +627,70 @@ function deriveRecommendedNextActions(
   }
 
   return Array.from(actions)
+}
+
+function filterExceptionReasons(reasons: string[]): string[] {
+  return reasons.filter((reason) =>
+    /validation_throw_error_return|single_operation_fallback_flow|retry_loop_manual_review|parse_failure_error_return|broad_checked_exception_unsupported|exception|fallback|retry/i.test(
+      reason
+    )
+  )
+}
+
+function readExceptionFlowReasons(
+  llm: Record<string, unknown> | null,
+  state: Record<string, unknown> | null
+): string[] | null {
+  return (
+    readStringArray(state?.exceptionFlowReasons) ??
+    readStringArray(state?.exception_flow_reasons) ??
+    readStringArray(llm?.exceptionFlowReasons) ??
+    readStringArray(llm?.exception_flow_reasons) ??
+    filterExceptionReasons(
+      readStringArray(llm?.statusReasons) ??
+        readStringArray(llm?.status_reasons) ??
+        readStringArray(state?.statusReasons) ??
+        readStringArray(state?.status_reasons) ??
+        []
+    )
+  )
+}
+
+function classifyExceptionFlowReason(reason: string) {
+  if (/validation_throw_error_return/i.test(reason)) {
+    return {
+      label: 'validation_throw_error_return',
+      review: 'Review whether the Java validation throw now behaves like the intended Go error return at all caller sites.',
+    }
+  }
+  if (/single_operation_fallback_flow/i.test(reason)) {
+    return {
+      label: 'single_operation_fallback_flow',
+      review: 'Review whether the fallback path still matches the intended Java recovery semantics and trigger conditions.',
+    }
+  }
+  if (/retry_loop_manual_review/i.test(reason)) {
+    return {
+      label: 'retry_loop_manual_review',
+      review: 'Review retry counter behavior, retry exit conditions, and final returned error semantics manually.',
+    }
+  }
+  if (/parse_failure_error_return/i.test(reason)) {
+    return {
+      label: 'parse_failure_error_return',
+      review: 'Review parse-failure mapping to Go error returns and verify caller-visible error handling.',
+    }
+  }
+  if (/broad_checked_exception_unsupported/i.test(reason)) {
+    return {
+      label: 'broad_checked_exception_unsupported',
+      review: 'This remains outside the supported subset; plan manual exception-flow redesign instead of trusting generated behavior.',
+    }
+  }
+  return {
+    label: 'exception_flow_manual_review',
+    review: 'Review how Java exception-style control flow was rewritten into Go error returns before trusting the result.',
+  }
 }
 
 function classifyTestIssue(reason: string) {
@@ -659,6 +752,12 @@ function buildInspectNextSteps(metadata: LlmEvaluationMetadata): string[] {
     item.testGenerationIssueReasons?.forEach((reason) => {
       actions.add(classifyTestIssue(reason).inspect)
     })
+    item.exceptionFlowReasons?.forEach((reason) => {
+      actions.add(classifyExceptionFlowReason(reason).review)
+    })
+  })
+  metadata.exceptionFlowReasons?.forEach((reason) => {
+    actions.add(classifyExceptionFlowReason(reason).review)
   })
 
   return Array.from(actions)
@@ -751,6 +850,36 @@ function IssueReasonList({
                 </span>
               </div>
               <p className="mt-2 text-slate-500">Inspect next: {issue.inspect}</p>
+            </li>
+          )
+        })}
+      </ul>
+    </div>
+  )
+}
+
+function ExceptionFlowReasonList({
+  title,
+  reasons,
+}: {
+  title: string
+  reasons: string[]
+}) {
+  return (
+    <div className="rounded border border-slate-800 bg-slate-900/30 p-3 text-xs">
+      <p className="font-medium text-slate-200">{title}</p>
+      <ul className="mt-2 space-y-2 text-slate-300">
+        {reasons.map((reason, index) => {
+          const item = classifyExceptionFlowReason(reason)
+          return (
+            <li key={`${index}-${reason}`} className="rounded border border-slate-800 bg-slate-950/40 p-2">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <span className="text-slate-200">{reason}</span>
+                <span className="rounded-full border border-slate-700 px-2 py-0.5 text-[10px] text-slate-400">
+                  {item.label}
+                </span>
+              </div>
+              <p className="mt-2 text-slate-500">Manual review: {item.review}</p>
             </li>
           )
         })}
@@ -866,6 +995,22 @@ function LlmEvaluationSummary({ metadata }: { metadata: LlmEvaluationMetadata })
         </div>
       )}
 
+      {metadata.exceptionFlowReasons && metadata.exceptionFlowReasons.length > 0 && (
+        <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
+          <ExceptionFlowReasonList
+            title="Exception-flow caveats"
+            reasons={metadata.exceptionFlowReasons}
+          />
+          <div className="rounded border border-amber-900/50 bg-amber-950/20 p-3 text-xs text-amber-100">
+            <p className="font-medium">Checked exception support remains narrow</p>
+            <p className="mt-2 text-amber-50/90">
+              JAVA2GO 只支持局部的 exception-like subset。当前结果中的 validation throw、fallback、retry、parse-failure
+              rule 仍然需要人工 review，不能视为广义 checked exception support。
+            </p>
+          </div>
+        </div>
+      )}
+
       {(metadata.testFailureReasons && metadata.testFailureReasons.length > 0) ||
       (metadata.testGenerationReasons && metadata.testGenerationReasons.length > 0) ? (
         <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
@@ -944,6 +1089,14 @@ function LlmEvaluationSummary({ metadata }: { metadata: LlmEvaluationMetadata })
                         classifier {item.classifierStatus}
                       </span>
                     )}
+                  </div>
+                )}
+                {item.exceptionFlowReasons && item.exceptionFlowReasons.length > 0 && (
+                  <div className="mt-3">
+                    <ExceptionFlowReasonList
+                      title="Exception-flow review items"
+                      reasons={item.exceptionFlowReasons}
+                    />
                   </div>
                 )}
                 {(item.testIssueReasons && item.testIssueReasons.length > 0) ||

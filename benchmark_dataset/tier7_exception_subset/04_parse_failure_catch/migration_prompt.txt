@@ -1,0 +1,6 @@
+Migrate this Java class to idiomatic Go.
+
+Requirements:
+- Output package `exceptionflow`.
+- Convert parse failure into explicit Go error handling.
+- Keep status conservative and explain that parse-error semantics need review.

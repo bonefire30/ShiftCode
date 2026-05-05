@@ -166,6 +166,45 @@
           "notes": "Wave1 aggregate may contain mixed fixture outcomes; this placeholder status keeps the fixture metadata within the shared status model."
         }
       ]
+    },
+    "exception-flow": {
+      "purpose": "Narrow checked-exception-like error flow subset for validation throw, fallback, retry, and parse-failure review.",
+      "defaultProfiles": ["mock"],
+      "allowRealProfiles": ["minimax", "codex-proxy"],
+      "fixtures": [
+        {
+          "id": "exception-flow.validation_throw",
+          "path": "benchmark_dataset/tier7_exception_subset/01_validation_throw",
+          "purpose": "Validation throw that should become an explicit Go error return.",
+          "javaPattern": "if (bad) throw IllegalArgumentException",
+          "expectedStatus": "partial",
+          "mustNotReportSuccess": true
+        },
+        {
+          "id": "exception-flow.single_fallback",
+          "path": "benchmark_dataset/tier7_exception_subset/02_single_fallback",
+          "purpose": "Single-operation try/catch fallback flow that still needs manual review.",
+          "javaPattern": "try { op() } catch (...) { fallback() }",
+          "expectedStatus": "partial",
+          "mustNotReportSuccess": true
+        },
+        {
+          "id": "exception-flow.retry_loop",
+          "path": "benchmark_dataset/tier7_exception_subset/03_retry_loop",
+          "purpose": "Simple retry loop around one exception path.",
+          "javaPattern": "catch + retry counter",
+          "expectedStatus": "partial",
+          "mustNotReportSuccess": true
+        },
+        {
+          "id": "exception-flow.parse_failure_catch",
+          "path": "benchmark_dataset/tier7_exception_subset/04_parse_failure_catch",
+          "purpose": "Parse failure wrapped in exception handling and converted to explicit Go error handling.",
+          "javaPattern": "parse/convert wrapped in catch",
+          "expectedStatus": "partial",
+          "mustNotReportSuccess": true
+        }
+      ]
     }
   }
 }

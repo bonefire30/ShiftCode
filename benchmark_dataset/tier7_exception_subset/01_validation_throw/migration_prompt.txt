@@ -1,0 +1,6 @@
+Migrate this Java class to idiomatic Go.
+
+Requirements:
+- Output package `exceptionflow`.
+- Convert validation throw into explicit Go error handling.
+- Keep report status conservative; this subset does not imply broad checked exception support.

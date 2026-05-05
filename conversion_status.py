@@ -95,10 +95,57 @@ def classify_java_sources(java_sources: dict[str, str] | list[str] | str) -> lis
             )
         )
         has_catch = bool(re.search(r"\bcatch\s*\(", text))
+        has_validation_throw = bool(
+            re.search(r"\bif\s*\([^)]*\)\s*\{?\s*throw\s+new\s+(?:IllegalArgumentException|IllegalStateException)\b", compact)
+        )
+        has_local_precondition_throw = bool(
+            re.search(
+                r"\b(?:public|private|protected)?\s*(?:static\s+)?(?:final\s+)?\w+\s+\w+\s*\([^)]*\)\s*\{\s*if\s*\([^)]*\)\s*\{?\s*throw\s+new\s+(?:IllegalArgumentException|IllegalStateException)\b",
+                compact,
+            )
+            or re.search(
+                r"\b(?:public|private|protected)?\s+[A-Z]\w*\s*\([^)]*\)\s*\{\s*if\s*\([^)]*\)\s*\{?\s*throw\s+new\s+(?:IllegalArgumentException|IllegalStateException)\b",
+                compact,
+            )
+        )
+        has_parse_failure_catch = bool(
+            re.search(r"\btry\s*\{[^}]*\b(?:Integer|Long|Double|Float|Short|Byte)\.parse\w+\s*\([^}]*\}[^}]*catch\s*\(\s*\w*NumberFormatException\b", compact)
+        )
+        has_single_operation_fallback = bool(
+            re.search(r"\btry\s*\{[^}]*\}\s*catch\s*\([^)]*\)\s*\{[^}]*\breturn\b", compact)
+        )
         has_retry_error_flow = bool(
             re.search(r"\b(retry|backoff|attempt|recover|fallback)\b", compact, re.IGNORECASE)
             and (has_checked_throws or has_catch or re.search(r"\bthrow\s+new\s+\w+", text))
         )
+        if has_validation_throw and not has_local_precondition_throw:
+            add(
+                "partial",
+                "Detected validation throw flow; convert Java validation exceptions into explicit Go error returns and review caller behavior.",
+                path,
+                category="validation_throw_error_return",
+            )
+        if has_single_operation_fallback:
+            add(
+                "partial",
+                "Detected single-operation fallback flow; review fallback semantics after converting exception control flow to Go error handling.",
+                path,
+                category="single_operation_fallback_flow",
+            )
+        if has_retry_error_flow:
+            add(
+                "partial",
+                "Detected retry loop exception flow; review retry and terminal-error semantics after converting to Go error returns.",
+                path,
+                category="retry_loop_manual_review",
+            )
+        if has_parse_failure_catch:
+            add(
+                "partial",
+                "Detected parse failure catch flow; convert parse exceptions into explicit Go error returns and review invalid-input behavior.",
+                path,
+                category="parse_failure_error_return",
+            )
         if has_checked_throws or has_catch or has_retry_error_flow:
             add("partial", "Detected Java exception flow; Go error-return design requires manual review.", path, category="java_exception_flow_partial")
         if (

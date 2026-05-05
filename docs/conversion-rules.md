@@ -63,6 +63,10 @@ Tests:
 | Parser/config default fallback | warning | `getOrDefault` can map to explicit Go fallback, but default/missing-key behavior must be verified. | `benchmark_dataset/tier8_parser_config/02_default_fallback` |
 | Parser/config required validation | partial | Null/containsKey validation plus Java throw should become explicit Go error returns and still needs review. | `benchmark_dataset/tier8_parser_config/03_required_field` |
 | Parser/config parse failure | partial | Simple parse failures can map to explicit Go error returns, but error-path behavior remains reviewable. | `benchmark_dataset/tier8_parser_config/04_parse_failure` |
+| Exception-flow validation throw | partial | Simple validation throws can map to Go error returns, but still need review and do not imply broad checked exception support. | `benchmark_dataset/tier7_exception_subset/01_validation_throw` |
+| Exception-flow single fallback | partial | Single-operation try/catch fallback remains conservative and requires manual review. | `benchmark_dataset/tier7_exception_subset/02_single_fallback` |
+| Exception-flow retry loop | partial | Retry loops with exception paths remain conservative and need manual review. | `benchmark_dataset/tier7_exception_subset/03_retry_loop` |
+| Exception-flow parse failure catch | partial | Parse failure wrapped in exception handling should become explicit Go error returns but remains reviewable. | `benchmark_dataset/tier7_exception_subset/04_parse_failure_catch` |
 
 ## Rule: Parser/Config Map-Backed Lookup
 
@@ -195,4 +199,166 @@ Warning or error behavior:
 
 Tests:
 - `benchmark_dataset/tier8_parser_config/04_parse_failure`
+- `tests/test_conversion_status.py`
+
+## Rule: Exception-Flow Validation Throw To Error Return
+
+Status: partial
+
+Java input pattern:
+
+```java
+if (age < 0) {
+    throw new IllegalArgumentException("age cannot be negative");
+}
+```
+
+Go output pattern:
+
+```go
+if age < 0 {
+	return fmt.Errorf("age cannot be negative")
+}
+```
+
+Semantic assumptions:
+- Validation is local and explicit.
+- The Java throw is converted into an explicit Go error return.
+
+Unsupported edge cases:
+- Cross-method exception propagation.
+- Framework validation handlers.
+
+Warning or error behavior:
+- Report `validation_throw_error_return` or a conservative exception-flow caveat as `partial`.
+
+Tests:
+- `benchmark_dataset/tier7_exception_subset/01_validation_throw`
+- `tests/test_conversion_status.py`
+
+## Rule: Exception-Flow Single-Operation Fallback
+
+Status: partial
+
+Java input pattern:
+
+```java
+try {
+    return fetch(primary);
+} catch (RuntimeException e) {
+    return "fallback";
+}
+```
+
+Go output pattern:
+
+```go
+if primary == "" {
+	return "fallback"
+}
+return primary
+```
+
+Semantic assumptions:
+- Only one operation is wrapped.
+- The fallback is local and explicit.
+
+Unsupported edge cases:
+- Multi-catch hierarchy semantics.
+- Fallback logic depending on exception subtype or external framework behavior.
+
+Warning or error behavior:
+- Report `single_operation_fallback_flow` as `partial`.
+
+Tests:
+- `benchmark_dataset/tier7_exception_subset/02_single_fallback`
+- `tests/test_conversion_status.py`
+
+## Rule: Exception-Flow Retry Loop
+
+Status: partial
+
+Java input pattern:
+
+```java
+while (true) {
+    try {
+        return task.run();
+    } catch (Exception e) {
+        attempt++;
+        if (attempt >= maxAttempts) {
+            throw e;
+        }
+    }
+}
+```
+
+Go output pattern:
+
+```go
+for {
+	value, err := run()
+	if err == nil {
+		return value, nil
+	}
+	attempt++
+	if attempt >= maxAttempts {
+		return "", err
+	}
+}
+```
+
+Semantic assumptions:
+- Retry counter and failure exit are explicit.
+- Go returns an error instead of preserving Java exception typing.
+
+Unsupported edge cases:
+- Multiple exception types with different retry policy.
+- Cross-method exception propagation analysis.
+
+Warning or error behavior:
+- Report `retry_loop_manual_review` as `partial`.
+
+Tests:
+- `benchmark_dataset/tier7_exception_subset/03_retry_loop`
+- `benchmark_dataset/tier7_exceptions/01_retry_executor`
+- `tests/test_conversion_status.py`
+
+## Rule: Exception-Flow Parse Failure Catch To Error Return
+
+Status: partial
+
+Java input pattern:
+
+```java
+try {
+    return Integer.parseInt(raw);
+} catch (NumberFormatException e) {
+    throw new IllegalArgumentException("timeout is invalid");
+}
+```
+
+Go output pattern:
+
+```go
+value, err := strconv.Atoi(raw)
+if err != nil {
+	return 0, fmt.Errorf("timeout is invalid")
+}
+return value, nil
+```
+
+Semantic assumptions:
+- The parse operation is local and explicit.
+- Go maps parse failure to explicit error return.
+
+Unsupported edge cases:
+- Complex parser composition.
+- Framework-managed parse/validation behavior.
+
+Warning or error behavior:
+- Report `parse_failure_error_return` as `partial`.
+
+Tests:
+- `benchmark_dataset/tier7_exception_subset/04_parse_failure_catch`
 - `tests/test_conversion_status.py`
