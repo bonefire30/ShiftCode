@@ -193,3 +193,32 @@ JAVA2GO now supports a narrow, test-backed parser/config subset with more useful
 reasons and conservative statuses, while leaving framework and dynamic config
 behavior explicitly out of scope.
 ```
+
+## Accepted MVP Docs, Examples, And Reporting Stage
+
+The accepted MVP packaging stage adds:
+
+- `docs/reporting-guide.md`
+- `examples/success-basic-lru-cache.md`
+- `examples/partial-parser-config.md`
+- `examples/unsupported-streams.md`
+
+Accepted outcome:
+
+- User-facing docs explain what JAVA2GO is and is not.
+- Reporting guidance explains `llmCallStatus`, `conversionStatus`, engineering status, `statusReasons`, and `recommendedNextActions`.
+- MVP examples cover `success`, `partial`, and `unsupported` outcomes.
+- Real LLM checks remain manual and optional.
+- Docs do not claim full Java compatibility or full parser/config support.
+
+Why this matters:
+
+- External users can now understand how to read MVP reports before trying a real project.
+- Reviewers can assess the current supported scope without reading internal implementation code.
+- Examples show the difference between safe success, partial parser/config behavior, and unsupported Java features.
+
+Product interpretation:
+
+```text
+JAVA2GO now explains its MVP capabilities with concrete examples and report-reading guidance, so users can tell what is safe, what needs review, and what remains unsupported.
+```
